@@ -1,262 +1,149 @@
-# Petlibro Automatic (Cat) Feeder (PLAF) AppDaemon integration/app
+# Petlibro Local
 
-This is (currently) a **prototype** [AppDaemon](https://github.com/AppDaemon/appdaemon)-based
-application to integrate
-[Petlibro's Automatic Feeder](https://petlibro.com/products/petlibro-granary-automatic-pet-feeder-with-camera)
-model *PLAF203S* into home assistant using MQTT. This enables users to control and monitor their
-device locally without Petlibro's proprietary App and Cloud platform.
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![GitHub Release](https://img.shields.io/github/v/release/erosen14/petlibro_local)](https://github.com/erosen14/petlibro_local/releases)
+[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
 
-## Disclaimer and remarks
+Fully local [Home Assistant](https://www.home-assistant.io/) integration for [Petlibro](https://petlibro.com/) automatic pet feeders over MQTT. No cloud, no Petlibro app, no internet required after initial Wi-Fi setup.
 
-* Not everything has been implemented, yet
-* Not everything has been fully and extensively tested
-* Not everything is guaranteed to work/to be bug free
-* I am not a python guy, please excuse any non-idiomatic patterns and practices
-* Your device might not be compatible due to different hardware or software versions
+## How It Works
 
-I am releasing my research and code to the public so interested hackers and home enthusiasts can
-pick it up and take it to the next level. It would make me glad to see this research serves as a
-foundation for creating a proper home assistant integration for these devices.
+Petlibro feeders communicate with `mqtt.us.petlibro.com` over unencrypted MQTT (port 1883). By redirecting that hostname to a local MQTT broker via DNS, the feeder talks directly to your Home Assistant instance instead of the cloud.
 
-The goal of this project is (currently) **NOT** to provide a fully working and battle tested 
-integration for the device and it's different models and versions.
+This integration:
 
-I am appreciating any comments/suggestions or contributions to this in the form of issues or
-pull requests with bugfixes or improvements and I eventually look into these. However, I have
-no intentions nor capacity to become a maintainer of this.
+1. Connects to your local MQTT broker
+2. Speaks the Petlibro MQTT protocol to your feeder
+3. Exposes all feeder controls and sensors as Home Assistant entities
+
+## Supported Devices
+
+| Model | Status | Credentials |
+|-------|--------|-------------|
+| PLAF203 / PLAF203S | Supported | Built-in (no sniffing needed) |
+| Other models | Should work | Auto-detect via built-in sniffer |
+
+> The MQTT credentials (product key and secret) are identical across all devices of the same model, hard-coded in the firmware. If your model isn't in the known credentials database yet, the setup flow can automatically capture them from your device. Please consider submitting a PR to add your model's credentials so others don't need to sniff.
+
+## Features
+
+### Sensors
+- Battery level, Wi-Fi signal strength (RSSI)
+- Motor state, feeding status, error codes
+- Last feed type and portions dispensed
+- Firmware version, power mode/type
+- SD card capacity and usage
+
+### Controls
+- **Buttons** — Dispense food, reboot, factory reset
+- **Switches** — LED light, sound, camera, audio, video recording, cloud recording, motion/sound detection, auto button lock
+- **Numbers** — Dispense portion count (1-20), volume (0-100%)
+- **Selects** — Night vision mode, camera resolution, video record mode, motion detection range/sensitivity, sound detection sensitivity
+
+### Monitoring
+- **Binary sensors** — Online status, food level, grain outlet blocked
+- **Events** — Feeding lifecycle (started, complete, blocked), device errors
+
+### Services
+- `petlibro_local.manual_feed` — Dispense a specific number of portions
+- `petlibro_local.set_feeding_plan` — Create/update a feeding schedule (time, portions, days, audio)
+- `petlibro_local.clear_feeding_plans` — Remove all feeding schedules
+
+## Prerequisites
+
+1. **Local MQTT broker** — [Mosquitto add-on](https://github.com/home-assistant/addons/blob/master/mosquitto/DOCS.md) or any MQTT broker on your network
+2. **DNS redirect** — Point `mqtt.us.petlibro.com` to your MQTT broker's IP
+
+### DNS Redirect Options
+
+The feeder resolves `mqtt.us.petlibro.com` to find its MQTT server. You need to override this to point to your local broker.
+
+| Method | Difficulty | Notes |
+|--------|-----------|-------|
+| **Router/firewall DNS override** | Easy | OPNsense, pfSense, UniFi, OpenWrt — add a host override entry |
+| **[AdGuard Home add-on](https://github.com/hassio-addons/addon-adguard-home)** | Easy | Filters > DNS Rewrites > add `mqtt.us.petlibro.com` > broker IP |
+| **[Dnsmasq add-on](https://github.com/home-assistant/addons/blob/master/dnsmasq/DOCS.md)** | Medium | Official HA add-on — add a `hosts` entry in the add-on config |
+| **Pi-hole** | Medium | Local DNS Records > add hostname > IP mapping |
+
+> **Note**: If using a DNS add-on on HA (AdGuard, Dnsmasq), your router's DHCP settings must hand out HA's IP as the DNS server so the feeder resolves through it.
+
+## Installation
+
+### HACS (Recommended)
+
+1. Open HACS in Home Assistant
+2. Click the three dots menu > **Custom repositories**
+3. Add `https://github.com/erosen14/petlibro_local` as an **Integration**
+4. Search for "Petlibro Local" and install
+5. Restart Home Assistant
+
+### Manual
+
+1. Download the [latest release](https://github.com/erosen14/petlibro_local/releases)
+2. Copy the `custom_components/petlibro_local` folder to your `config/custom_components/` directory
+3. Restart Home Assistant
+
+## Setup
+
+Add the integration via **Settings > Devices & Services > Add Integration > Petlibro Local**.
+
+The config flow offers two paths:
+
+### Auto-detect (recommended)
+
+1. Select **Auto-detect from device**
+2. Set up the DNS redirect as prompted (the UI shows your HA IP)
+3. Click Submit — the integration starts a temporary MQTT listener on port 1883
+4. Wait ~30-90 seconds for the feeder to reconnect
+5. Serial number, model, and credentials are captured automatically
+6. Confirm the detected values and enter your MQTT broker details
+
+### Manual entry
+
+1. Select **Enter serial number manually**
+2. Enter your device serial number and model (e.g. `PLAF203`)
+3. If the model has known credentials, you'll skip straight to broker config
+4. Otherwise, choose auto-detect or enter MQTT credentials manually
+5. Enter your MQTT broker details
+
+### Finding Your Serial Number
+
+The serial number (DL_DEVICE_ID) can be found:
+- On the device label (bottom of feeder)
+- In the Petlibro app under device settings
+- Automatically via the auto-detect setup flow
+
+## Debug Logging
+
+Add to your `configuration.yaml`:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.petlibro_local: debug
+```
+
+## Known Limitations
+
+- **Camera/audio streaming** is not supported — the device uses ThroughTek's Kalay SDK (proprietary cloud video platform) which cannot be easily replicated locally
+- **OTA firmware updates** are not implemented
+- **Feeding audio** may cause a device reboot if the audio file URL is unreachable — disable feeding audio via the sound switch if your feeder has no internet access
+
+## Acknowledgments
+
+This integration builds on the protocol reverse engineering work from the [plaf203](https://github.com/icex2/plaf203) project by [@icex2](https://github.com/icex2). That project documented the full Petlibro MQTT protocol, message formats, and topic structure as an AppDaemon prototype. The protocol layer in this integration is derived from that research.
+
+Security research by [Kaspersky Securelist](https://securelist.com/) confirmed that MQTT credentials are hard-coded per device model in the firmware, enabling the known credentials database that makes setup instant for supported models.
+
+## Contributing
+
+Contributions are welcome. The most impactful way to help:
+
+- **Add your device's credentials** — Use the auto-detect flow to capture credentials for your model, then submit a PR adding them to `known_credentials.py`
+- **Report issues** — File bugs or feature requests on the [issue tracker](https://github.com/erosen14/petlibro_local/issues)
+- **Test on different models** — The protocol should work across Petlibro's MQTT-based product line
 
 ## License
 
-Source code license is the Unlicense; you are permitted to do with this as thou wilt. For details,
-please refer to the [LICENSE file](LICENSE) included with the source code.
-
-## Status quo
-
-All of my research and implementation is based on a `PLAF203S` device with:
-
-* Hardware version: `1.0.7`
-* Software version: `3.0.14`
-
-### Done
-
-* Full protocol reverse engineered and documented (minus the last unknown bits)
-* MQTT discovery for home assistant
-* NTP synchronization and drift detection
-* Device life cycle handling and auto reconnect
-* Manual feeding
-* Food plans
-* (Nearly) all configuration/feature switches, e.g. turn on/off camera, audio, sound, motion
-  detection, feeding video recording features
-* State of all features as sensors, e.g. SD card, power/battery backup, food output state
-* Various diagnostic information about the device as sensors
-* Device specific actions: reboot, wifi reconnect, factory reset, sd card format
-
-### Not working/not implemented
-
-* Age type "Schedule enable" and supporting fields on all features that support this. Currently only supported the
-  default age type "non schedule enabled"
-* OTA
-* Anything non plaf203 related, e.g. some water fountain specific stuff
-* Testing/supporting any other feeding devices similar to the PLAF203S
-* Camera and audio streaming. Uses a [proprietary API with a audio/video cloud SaaS solution](#video-and-audio-streaming)
-* Motion detection event dispatching + exposing as motion sensor
-* Wifi reconfiguration
-
-### Known issues/broken
-
-* If setting audio url and the audio file cannot be downloaded (can be observed on the uart output console of the
-  device), the device crashes and restarts
-  * Mitigation: don't use the feature now and just disable feeding audio using the feature switch
-* "Buttons auto lock" is not what I expected it to be. Currently, only the enable switch does something but I don't 
-  know what. The threshold slider is currently broken
-* Recording videos to SD card seems to work, but no idea how to open them
-
-## Reverse engineering and research
-
-### Differences tuya version (PLAF203) vs. mqtt version (PLAF203S)
-
-Even the feeders look identical from the outside, the hardware and software stack are very 
-different.
-
-More information can be found on the
-[home assistant forums](https://community.home-assistant.io/t/petlibro-cat-feeder/498637/34) already.
-
-The key difference relevant to kicking off the reverse engineering efforts here were:
-
-* Model identifier: The MQTT-based ones are PLAF203S models, see FCC-ID on the bottom of the device
-  * [FCC report PLAF203](https://fcc.report/FCC-ID/2A3DE-PLAF203)
-  * [FCC report PLAF203S](https://fcc.report/FCC-ID/2A3DE-PLAF203S)
-* Different microcontroller and firmware, so
-  [known methods for intrusion via scripts on the SD card](https://github.com/taylorfinnell/PLAF203-research) don't \
-  seem to work anymore
-* MQTT-based instead of local tuya
-
-### Setup
-
-#### Serial console and debug output
-
-Luckily, the device has three pins on the PCB exposed and easily accessible which are `RXD`, `TXD`
-and `GND` to hook up a serial console via a serial adapter USB adapter with the baudrate set to
-`115200`. The device outputs all terminal output, from initial bootloaders, the kernel and userspace
-to the serial console.
-
-For example, using [minicom](https://linux.die.net/man/1/minicom):
-`minicom --capturefile capture.dump  --baudrate 115200 --device /dev/tty.usbserial-130`
-
-Which also writes all output to a file called `capture.dump` which was very useful to come back to
-package dumps that I created while playing around with the official app.
-
-Furthermore, the main application is also very verbose with a lot of useful debug output to 
-understand and debug application and device behavior including full MQTT sent and received message
-dumps.
-
-Remark: I haven't been able to send keyboard inputs to the device which would have allowed me to
-interrupt the boot process and probably use the shell that is spawned during the boot process.
-
-#### Network connection
-
-In order to get the device on-boarded and accessible on my local network, I used the official
-petlibro app once to pair the device to my local wifi. Once that was finished, I blocked all access
-to the outside for the device as that's not needed anymore for running it fully local (without
-using the official app).
-
-#### MQTT connection
-
-* The device tries to connect to the MQTT server using the following DNS entries
-  * `mqtt.us.petlibro.com`
-  * `us-mqtt-0.aiotlibro.com`
-  * `us-mqtt-0.dl-aiot.com`
-* I set up my local DNS server to redirect `mqtt.us.petlibro.com` to my own local MQTT server instance
-* The device tries to connect non-encrypted first on port `1883` which is somewhat questionable from
-  a security perspective under intended usage, but useful in this case to get it connected easily on
-  my local network
-* The device tries to connect with a factory-configured product key, product secret and device ID
-  to the MQTT instance
-  * Either allow it to connect without authorization
-  * Or have a look at the [serial console](#serial-console-and-debug-output) on a full boot cycle
-    to dump the credentials as they are printed to the console in clear text. Try to find the
-    log line looking like this:
-    `MQTTConnect retry,DL_PRODUCT_KEY:<KEY>, DL_PRODUCT_SECRET:<SECRET>, DL_MQTT_ADDR:mqtt.us.petlibro.com, DL_DEVICE_ID:<ID>`
-    * `DL_PRODUCT_KEY` = username
-    * `DL_PRODUCT_SECRET` = password
-    * `DL_DEVICE_ID` will be the name of the device in mqtt
-
-#### AppDaemon integration configuration
-
-The current project structure is kept as a simple "mono-file" which makes it fairly straight forward
-to deploy it to AppDaemon:
-
-* Copy the `plaf203.py` file to your `appdaemon/apps` folder
-* Copy the section of `apps.yaml` to your AppDaemon installation's `apps.yaml`
-  * Replace `serial_number` with your device's serial number which is the `DL_DEVICE_ID` you
-    [need to acquire somehow](#mqtt-connection)
-  * Replace the `mqtt_host` with either the hostname or IP of your MQTT broker
-* Check the AppDaemon logs if everything starts up fine, you should see some log output from the
-  integration similar to this: `INFO plaf203: Initializing plaf203, serial number 00000000000000000`
-* Turn your device on, make sure it connects fine to your MQTT broker, check the
-  [serial console output](#serial-console-and-debug-output) and if topics starting with
-  `dl/plaf203/...` are created on your broker
-* Considering you have MQTT discover with home assistant enabled, the device should appear on your
-  home assistant's MQTT integration as `Pet libro cat feeder`
-
-#### Feeder configuration
-
-All configuration options of the feeder are exposed as writable configuration entities on the MQTT
-device such as switches, text, sliders, number boxes or drop-down lists.
-
-Most of these should be self-explanatory, except for the food plans. Currently, up to 10 food
-plans can be configured. The food plan defines when the feeder is outputting a specific amount of
-food automatically.
-
-This is currently implemented by providing a json formatted data structure on the available
-configuration entities. Contributions to make this more user-friendly but also avoiding complexity
-are very welcome.
-
-Here is an example of one food plan that runs daily at 19:00 with the feeding sound disabled and
-outputs 3 portions. Just copy-paste into one or multiple food plan slots and make sure the `id`
-field differs (just increment it, that's sufficient).
-
-```json
-{"id": 1, "execution_time": {"hour": 19, "minute": 0}, "scheduled_days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"], "enable_audio": false, "play_audio_times": 1, "grain_num": 3}
-```
-
-Scheduled days is a set of days when to run the plan.
-
-### Some more network communication
-
-Capture the network traffic and also looking into the firmware, I discovered the following hostnames
-and IP addresses that are either used or potentially used:
-
-* MQTT
-  * `mqtt.us.petlibro.com`
-  * `us-mqtt-0.aiotlibro.com`
-  * `us-mqtt-0.dl-aiot.com`
-* IPs
-  * `54.156.99.57` -> Petlibro MQTT on AWS in US
-  * `44.211.92.174` -> tutk ip?
-  * `139.162.174.232` -> Akamai? Maybe for the feeding audio asset(s) 
-* Extracted URLs from firmware binary
-  * `mqtt.us.petlibro.com`:1883
-  * `sit-svc.dl-aiot.com`:1883
-  * `demo-svc.dl-aiot.com`:1883
-  * `mqtt.dl-aiot.com`:1883
-  * `test.svc.dl-aiot.com`:1883
-  * `kalay.net.cn`
-  * `kalayservice.com`
-  * `iotcplatform.com`
-
-### The "pet feeder procotol" over MQTT
-
-* There are two directions of request-response communication
-  * Backend/server -> device
-    * The server posts MQTT messages to a topic with path ending in `sub`
-    * Example: `dl/plaf203/00000000000000000/device/service/sub`
-    * The device is expected to subscribe to these topics and consume the
-      messages
-    * The backend consumes any responses by the device from the same 
-      endpoint/path, but ending in `post`
-    * Example: `dl/plaf203/00000000000000000/device/service/post`
-  * Device -> backend/server
-    * The device posts MQTT message to the topic with the path ending in `post`
-    * Example: `dl/plaf203/00000000000000000/device/event/post`
-    * The backend is expected to subscribe to these topics and consume the
-      messages
-    * The device consumes any responses by the backend from the same
-      endpoint/path, but ending in `sub`
-    * Example: `dl/plaf203/00000000000000000/device/event/sub`
-* Communication is further grouped with topics by "types of communication"
-  * `heart`: Heartbeat messages from device
-  * `ota`: Over the air firmware updates
-  * `ntp`: NTP time synchronization for device
-  * `broadcast`: Some currently unknown broadcast channel?
-  * `config`: Device/system configuration related, direction: server -> device
-  * `event`: Main channel for feeder product features communication, direction: device -> server
-  * `service`: Main channel for feeder product features communication, direction: server -> device
-  * `system`: System related commands: direction: server -> device
-* Messages sent over these topics/channels always (except for heartbeat and ntp) have the following
-  header information:
-  * `cmd`: The command/message type identifier (see `plaf203.py` at the top for all commands and
-    documentation)
-  * `message_id`: Unique identifier for messages, IDs of responses have to match requests
-  * `timestamp`: Unix-epoch timestamp in milliseconds (UTC)
-
-### Video and audio streaming
-
-* The device uses some API referred to as `tutk` in the firmware which is the Kalay SDK of ThroughTek
-  * [API reference](https://github.com/taishanmayi/tutk_test/blob/master/include/AVAPIs.h)
-* The API integrates with a SaaS video streaming platform by [Throughtek](https://www.throughtek.com/overview/)
-* Some more potentially useful code references
-    * https://github.com/taishanmayi/tutk_test/tree/master
-    * https://github.com/TutkKalay/Kalay_Kit_Sample_App/tree/master
-
-No actual work has been done on this. It seems to require a re-implementation of the server to
-talk to the client portion of the device correctly in order to implement local video streaming.
-
-Maybe there is an easier solution to modify the system once it is possible to access it.
-
-### Feeding audio playback
-
-* The device supports playing a pre-recorded audio track when outputting food
-* [Default audio file url](https://dl-oss-prod.s3.us-east-1.amazonaws.com/platform/audio/come_to_eat.aac)
-* The device tries to download the audio file and will crash and burn (i.e. reboot) if it fails to
-  do so without any further error output to the user
+[Unlicense](LICENSE) — public domain.
