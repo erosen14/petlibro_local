@@ -1,8 +1,9 @@
 """Lightweight MQTT CONNECT packet sniffer for auto-detecting Petlibro credentials.
 
-Starts a temporary TCP server on port 1883. When the Petlibro device connects
-(after DNS redirect), we parse the MQTT CONNECT packet to extract client_id,
-username, and password. Then we send CONNACK (refused) and close.
+When Mosquitto is temporarily stopped, this starts a TCP server on port 1883.
+The Petlibro feeder reconnects and sends a CONNECT packet containing its
+client_id (serial), username (product_key), and password (product_secret).
+We capture these credentials and send CONNACK (refused) back.
 """
 
 from __future__ import annotations
@@ -16,29 +17,20 @@ _LOGGER = logging.getLogger(__name__)
 MQTT_CONNECT_PACKET_TYPE = 1
 SNIFFER_TIMEOUT = 120  # seconds to wait for a connection
 
+# HA internal MQTT clients to ignore
+_HA_CLIENT_PREFIXES = ("homeassistant", "addons", "mqttjs_", "ha-")
+
 
 class CredentialSnifferError(Exception):
     """Error during credential sniffing."""
 
 
 def _parse_mqtt_connect(data: bytes) -> dict[str, str]:
-    """Parse an MQTT 3.1.1 CONNECT packet and extract credentials.
+    """Parse an MQTT CONNECT packet and extract credentials.
 
-    MQTT CONNECT format (after fixed header):
-      - Protocol Name (length-prefixed string): "MQTT" or "MQIsdp"
-      - Protocol Level: 4 (for 3.1.1)
-      - Connect Flags: 1 byte
-      - Keep Alive: 2 bytes
-      - Payload (length-prefixed strings in order):
-        - Client ID (always present)
-        - Will Topic (if will flag set)
-        - Will Message (if will flag set)
-        - Username (if username flag set)
-        - Password (if password flag set)
+    Supports both MQTT 3.1 (MQIsdp) and 3.1.1 (MQTT) protocols.
+    Returns dict with client_id, username, password.
     """
-    pos = 0
-
-    # Fixed header: packet type + remaining length
     if len(data) < 2:
         raise CredentialSnifferError("Packet too short")
 
@@ -59,11 +51,9 @@ def _parse_mqtt_connect(data: bytes) -> dict[str, str]:
         if (encoded_byte & 0x80) == 0:
             break
 
-    payload_start = pos
-    if len(data) < payload_start + remaining_length:
+    if len(data) < pos + remaining_length:
         raise CredentialSnifferError("Incomplete packet")
 
-    # Variable header starts at pos
     def read_utf8_string(p: int) -> tuple[str, int]:
         if p + 2 > len(data):
             raise CredentialSnifferError("String length truncated")
@@ -81,8 +71,7 @@ def _parse_mqtt_connect(data: bytes) -> dict[str, str]:
     # Protocol level
     if pos >= len(data):
         raise CredentialSnifferError("Missing protocol level")
-    protocol_level = data[pos]
-    pos += 1
+    pos += 1  # skip protocol level
 
     # Connect flags
     if pos >= len(data):
@@ -92,14 +81,12 @@ def _parse_mqtt_connect(data: bytes) -> dict[str, str]:
 
     has_username = bool(connect_flags & 0x80)
     has_password = bool(connect_flags & 0x40)
-    has_will_retain = bool(connect_flags & 0x20)
-    will_qos = (connect_flags >> 3) & 0x03
     has_will = bool(connect_flags & 0x04)
 
     # Keep alive
     if pos + 2 > len(data):
         raise CredentialSnifferError("Missing keep alive")
-    pos += 2  # skip keep alive
+    pos += 2
 
     # Payload: Client ID
     client_id, pos = read_utf8_string(pos)
@@ -107,7 +94,6 @@ def _parse_mqtt_connect(data: bytes) -> dict[str, str]:
     # Will Topic + Will Message (if present)
     if has_will:
         _will_topic, pos = read_utf8_string(pos)
-        # Will payload is length-prefixed binary
         if pos + 2 > len(data):
             raise CredentialSnifferError("Will payload truncated")
         will_len = struct.unpack("!H", data[pos : pos + 2])[0]
@@ -131,14 +117,14 @@ def _parse_mqtt_connect(data: bytes) -> dict[str, str]:
 
 
 def _make_connack_refused() -> bytes:
-    """Build an MQTT CONNACK packet with 'connection refused' return code.
-
-    This tells the device to back off without fully connecting.
-    Return code 5 = "not authorized" — device will retry later.
-    """
-    # Fixed header: CONNACK (type 2), remaining length 2
-    # Variable header: session present = 0, return code = 5 (not authorized)
+    """Build MQTT CONNACK with 'not authorized' return code."""
     return bytes([0x20, 0x02, 0x00, 0x05])
+
+
+def _is_ha_client(client_id: str) -> bool:
+    """Check if this is a Home Assistant internal MQTT client."""
+    lower = client_id.lower()
+    return any(lower.startswith(p) for p in _HA_CLIENT_PREFIXES)
 
 
 async def sniff_mqtt_credentials(
@@ -146,40 +132,49 @@ async def sniff_mqtt_credentials(
     port: int = 1883,
     timeout: int = SNIFFER_TIMEOUT,
 ) -> dict[str, str]:
-    """Start a temporary MQTT listener and capture the first CONNECT packet.
+    """Start a temporary MQTT listener and capture the first device CONNECT.
 
+    Ignores HA internal clients (homeassistant, addons, etc).
     Returns dict with client_id, username, password.
     Raises CredentialSnifferError on timeout or parse failure.
     """
     result: dict[str, str] | None = None
-    error: Exception | None = None
+    event = asyncio.Event()
 
     async def handle_client(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        nonlocal result, error
+        nonlocal result
         peer = writer.get_extra_info("peername")
-        _LOGGER.info("Sniffer: connection from %s", peer)
+        _LOGGER.debug("Sniffer: connection from %s", peer)
 
         try:
-            # Read enough data for a CONNECT packet (usually < 200 bytes)
             data = await asyncio.wait_for(reader.read(4096), timeout=10)
             if not data:
                 return
 
-            result = _parse_mqtt_connect(data)
+            creds = _parse_mqtt_connect(data)
             _LOGGER.info(
-                "Sniffer: captured credentials — client_id=%s, username=%s",
-                result["client_id"],
-                result["username"],
+                "Sniffer: CONNECT from client_id=%s, username=%s",
+                creds["client_id"],
+                creds["username"],
             )
 
-            # Send CONNACK refused so device retries later
+            # Skip HA internal clients
+            if _is_ha_client(creds["client_id"]):
+                _LOGGER.debug("Sniffer: ignoring HA client %s", creds["client_id"])
+                writer.write(_make_connack_refused())
+                await writer.drain()
+                return
+
+            # This is a device — capture credentials
+            result = creds
+            event.set()
+
             writer.write(_make_connack_refused())
             await writer.drain()
         except Exception as exc:
-            _LOGGER.debug("Sniffer: parse error: %s", exc)
-            error = exc
+            _LOGGER.debug("Sniffer: error handling connection: %s", exc)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -188,19 +183,8 @@ async def sniff_mqtt_credentials(
     _LOGGER.info("Sniffer: listening on %s:%d (timeout %ds)", host, port, timeout)
 
     try:
-        deadline = asyncio.get_event_loop().time() + timeout
         async with server:
-            while result is None:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    raise CredentialSnifferError(
-                        f"No MQTT CONNECT received within {timeout}s"
-                    )
-                # Serve connections until we get a valid CONNECT
-                await asyncio.wait_for(server.start_serving(), timeout=1)
-                await asyncio.sleep(0.5)
-                if result is not None:
-                    break
+            await asyncio.wait_for(event.wait(), timeout=timeout)
     except asyncio.TimeoutError:
         pass
     finally:
@@ -209,7 +193,7 @@ async def sniff_mqtt_credentials(
 
     if result is None:
         raise CredentialSnifferError(
-            f"No MQTT CONNECT received within {timeout}s"
+            f"No device CONNECT received within {timeout}s"
         )
 
     return result

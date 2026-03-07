@@ -25,11 +25,6 @@ TOPIC_BROADCAST_SUB = TOPIC_BASE + "/broadcast/sub"
 
 # Config entry keys
 CONF_SERIAL = "serial"
-CONF_PRODUCT_KEY = "product_key"
-CONF_PRODUCT_SECRET = "product_secret"
-CONF_DEVICE_ID = "device_id"
-CONF_MQTT_HOST = "mqtt_host"
-CONF_MQTT_PORT = "mqtt_port"
 CONF_MQTT_USERNAME = "mqtt_username"
 CONF_MQTT_PASSWORD = "mqtt_password"
 

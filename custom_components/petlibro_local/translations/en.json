@@ -5,64 +5,36 @@
         "title": "Petlibro Local Setup",
         "description": "Choose how to set up your Petlibro feeder.",
         "menu_options": {
-          "auto_detect": "Auto-detect from device (recommended)",
-          "manual_serial": "Enter serial number manually"
-        }
-      },
-      "manual_serial": {
-        "title": "Manual Setup",
-        "description": "Enter your feeder's serial number (DL_DEVICE_ID) and model. If your model is in the known credentials database, setup will be instant.",
-        "data": {
-          "serial": "Device serial number",
-          "model": "Device model (e.g. PLAF203)"
-        }
-      },
-      "unknown_model": {
-        "title": "Unknown Model",
-        "description": "No known credentials for model **{model}**. Choose how to provide MQTT credentials.",
-        "menu_options": {
-          "auto_detect": "Auto-detect credentials (recommended)",
-          "manual_credentials": "Enter credentials manually"
+          "auto_detect": "Auto-detect feeder (recommended)",
+          "manual": "Enter credentials manually"
         }
       },
       "auto_detect": {
-        "title": "Auto-detect Credentials",
-        "description": "Before you begin:\n- **Stop your MQTT broker** (e.g. Mosquitto add-on) so port 1883 is free for the sniffer\n- Add a **DNS host override** in your router pointing **mqtt.us.petlibro.com** to **{ha_ip}**\n\nSteps:\n1. Click **Submit** to start listening on port 1883\n2. **Power-cycle your feeder** (unplug and replug) to force it to reconnect immediately\n3. The feeder will connect to this listener within ~30 seconds\n\nSerial number, model, and credentials will be captured automatically. After setup, restart your MQTT broker.",
-        "data": {
-          "listen_port": "Listen port"
-        }
+        "title": "Auto-detect Device",
+        "description": "This will scan for your Petlibro feeder.\n\nMake sure:\n1. **mqtt.us.petlibro.com** resolves to your HA IP (via DNS override)\n2. The feeder is powered on and connected to Wi-Fi\n\nThe integration will first check the existing MQTT broker. If the feeder isn't found, it will **temporarily stop Mosquitto** (~2 minutes) to capture your feeder's credentials directly, then restart Mosquitto with the correct login.\n\nClick **Submit** to start scanning.",
+        "data": {}
       },
       "auto_detect_confirm": {
-        "title": "Credentials Captured",
-        "description": "Successfully captured credentials from your Petlibro feeder (model: **{model}**)! Please consider submitting these to the project so other users with your model don't need to sniff.",
+        "title": "Device Found",
+        "description": "Discovered feeder **{serial}** on your MQTT broker.\n\nMQTT credentials have been automatically configured in Mosquitto.\n\n**Note:** After completing setup, the feeder may take up to **2 minutes** to reconnect and start reporting data. This is normal — the feeder needs to re-establish its MQTT connection after the credential capture process.",
+        "data": {
+          "serial": "Device serial number"
+        }
+      },
+      "manual": {
+        "title": "Manual Setup",
+        "description": "Enter your feeder's serial number and MQTT credentials.\n\nThe serial number (DL_DEVICE_ID) is on the bottom of the feeder or in the Petlibro app. The MQTT credentials (DL_PRODUCT_KEY / DL_PRODUCT_SECRET) are the same for all devices of the same model.",
         "data": {
           "serial": "Device serial number",
           "mqtt_username": "MQTT username (DL_PRODUCT_KEY)",
           "mqtt_password": "MQTT password (DL_PRODUCT_SECRET)"
-        }
-      },
-      "manual_credentials": {
-        "title": "Manual Credential Entry",
-        "description": "Enter the MQTT credentials from your feeder's CONNECT packet or serial console output.",
-        "data": {
-          "serial": "Device serial number",
-          "mqtt_username": "MQTT username (DL_PRODUCT_KEY)",
-          "mqtt_password": "MQTT password (DL_PRODUCT_SECRET)"
-        }
-      },
-      "broker": {
-        "title": "MQTT Broker",
-        "description": "Enter your local MQTT broker details. The feeder must be redirected to this broker via DNS override.",
-        "data": {
-          "mqtt_host": "Broker host",
-          "mqtt_port": "Broker port"
         }
       }
     },
     "error": {
-      "cannot_connect": "Cannot connect to MQTT broker",
-      "sniffer_timeout": "No feeder connection detected. Check DNS redirect and try again.",
-      "sniffer_port_in_use": "Port 1883 is already in use. Stop any MQTT broker first.",
+      "no_devices_found": "No Petlibro feeders detected. Check that the DNS redirect is active and the feeder is connected to Wi-Fi.",
+      "mqtt_unavailable": "HA's MQTT integration is not available. Set up Mosquitto first.",
+      "cannot_stop_mosquitto": "Could not stop Mosquitto add-on. Ensure you are running HA OS with the Mosquitto add-on installed.",
       "unknown": "Unknown error occurred"
     },
     "abort": {

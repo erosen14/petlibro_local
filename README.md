@@ -18,12 +18,12 @@ This integration:
 
 ## Supported Devices
 
-| Model | Status | Credentials |
-|-------|--------|-------------|
-| PLAF203 / PLAF203S | Supported | Built-in (no sniffing needed) |
-| Other models | Should work | Auto-detect via built-in sniffer |
+| Model | Status |
+|-------|--------|
+| PLAF203 / PLAF203S | Tested |
+| Other models | Should work |
 
-> The MQTT credentials (product key and secret) are identical across all devices of the same model, hard-coded in the firmware. If your model isn't in the known credentials database yet, the setup flow can automatically capture them from your device. Please consider submitting a PR to add your model's credentials so others don't need to sniff.
+> The auto-detect setup flow captures your feeder's MQTT credentials directly from its connection attempt — no manual credential entry or firmware sniffing needed. The credentials (product key and secret) are hard-coded per model in the firmware and identical across all devices of the same model.
 
 ## Features
 
@@ -51,12 +51,12 @@ This integration:
 
 ## Prerequisites
 
-1. **Local MQTT broker** — [Mosquitto add-on](https://github.com/home-assistant/addons/blob/master/mosquitto/DOCS.md) or any MQTT broker on your network
-2. **DNS redirect** — Point `mqtt.us.petlibro.com` to your MQTT broker's IP
+1. **Home Assistant MQTT integration** — [Mosquitto add-on](https://github.com/home-assistant/addons/blob/master/mosquitto/DOCS.md) installed and configured in HA
+2. **DNS redirect** — Point `mqtt.us.petlibro.com` to your HA/Mosquitto IP
 
-### DNS Redirect Options
+### DNS Redirect
 
-The feeder resolves `mqtt.us.petlibro.com` to find its MQTT server. You need to override this to point to your local broker.
+The feeder resolves `mqtt.us.petlibro.com` to find its MQTT server. Override this to point to your HA/Mosquitto IP.
 
 | Method | Difficulty | Notes |
 |--------|-----------|-------|
@@ -66,6 +66,8 @@ The feeder resolves `mqtt.us.petlibro.com` to find its MQTT server. You need to 
 | **Pi-hole** | Medium | Local DNS Records > add hostname > IP mapping |
 
 > **Note**: If using a DNS add-on on HA (AdGuard, Dnsmasq), your router's DHCP settings must hand out HA's IP as the DNS server so the feeder resolves through it.
+
+Mosquitto login credentials are **automatically configured** by the integration during setup — no manual credential entry needed.
 
 ## Installation
 
@@ -91,27 +93,20 @@ The config flow offers two paths:
 
 ### Auto-detect (recommended)
 
-1. Select **Auto-detect from device**
-2. Set up the DNS redirect as prompted (the UI shows your HA IP)
-3. Click Submit — the integration starts a temporary MQTT listener on port 1883
-4. Wait ~30-90 seconds for the feeder to reconnect
-5. Serial number, model, and credentials are captured automatically
-6. Confirm the detected values and enter your MQTT broker details
+Requires the feeder to already be connected to your local Mosquitto broker (DNS redirect + login configured).
+
+1. Select **Auto-detect from MQTT**
+2. Click Submit — the integration first checks the existing MQTT broker for your feeder
+3. If the feeder isn't found, it temporarily stops Mosquitto and captures your feeder's MQTT credentials directly from its connection attempt (~2 minutes)
+4. Credentials are automatically added to Mosquitto and the broker is restarted
+5. Confirm the discovered serial number
+
+> **Note:** After setup, the feeder may take up to 2 minutes to reconnect and start reporting data.
 
 ### Manual entry
 
-1. Select **Enter serial number manually**
-2. Enter your device serial number and model (e.g. `PLAF203`)
-3. If the model has known credentials, you'll skip straight to broker config
-4. Otherwise, choose auto-detect or enter MQTT credentials manually
-5. Enter your MQTT broker details
-
-### Finding Your Serial Number
-
-The serial number (DL_DEVICE_ID) can be found:
-- On the device label (bottom of feeder)
-- In the Petlibro app under device settings
-- Automatically via the auto-detect setup flow
+1. Select **Enter credentials manually**
+2. Enter your device serial number and MQTT credentials (DL_PRODUCT_KEY / DL_PRODUCT_SECRET)
 
 ## Debug Logging
 
@@ -140,7 +135,7 @@ Security research by [Kaspersky Securelist](https://securelist.com/) confirmed t
 
 Contributions are welcome. The most impactful way to help:
 
-- **Add your device's credentials** — Use the auto-detect flow to capture credentials for your model, then submit a PR adding them to `known_credentials.py`
+- **Test on different models** — The auto-detect flow captures credentials automatically from any Petlibro feeder
 - **Report issues** — File bugs or feature requests on the [issue tracker](https://github.com/erosen14/petlibro_local/issues)
 - **Test on different models** — The protocol should work across Petlibro's MQTT-based product line
 

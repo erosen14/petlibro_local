@@ -4,27 +4,155 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.helpers import network
+from homeassistant.components import mqtt
 
 from .const import (
-    CONF_MQTT_HOST,
-    CONF_MQTT_PASSWORD,
-    CONF_MQTT_PORT,
     CONF_MQTT_USERNAME,
+    CONF_MQTT_PASSWORD,
     CONF_SERIAL,
-    DEVICE_PRODUCT_ID,
     DOMAIN,
-    MQTT_PORT,
 )
-from .credential_sniffer import CredentialSnifferError, sniff_mqtt_credentials
-from .known_credentials import get_credentials, reverse_lookup_model
+from .credential_sniffer import sniff_mqtt_credentials, CredentialSnifferError
 
 _LOGGER = logging.getLogger(__name__)
+
+# Topic pattern: dl/{model}/{serial}/device/heart/post
+DISCOVERY_TOPIC = "dl/+/+/device/heart/post"
+DISCOVERY_TIMEOUT = 60
+SNIFFER_TIMEOUT = 120
+
+SUPERVISOR_URL = "http://supervisor"
+MOSQUITTO_SLUG = "core_mosquitto"
+
+
+async def _supervisor_api(method: str, path: str, json_data: dict | None = None) -> dict | None:
+    """Call a Supervisor API endpoint. Returns response JSON or None."""
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        return None
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            if method == "GET":
+                async with session.get(f"{SUPERVISOR_URL}{path}", headers=headers) as resp:
+                    if resp.status != 200:
+                        return None
+                    return await resp.json()
+            else:
+                async with session.post(
+                    f"{SUPERVISOR_URL}{path}",
+                    headers=headers,
+                    json=json_data or {},
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    return await resp.json()
+    except Exception:
+        _LOGGER.debug("Supervisor API call failed: %s %s", method, path, exc_info=True)
+        return None
+
+
+async def _get_mosquitto_options() -> dict | None:
+    """Read current Mosquitto add-on options."""
+    data = await _supervisor_api("GET", f"/addons/{MOSQUITTO_SLUG}/info")
+    if data:
+        return data.get("data", {}).get("options", {})
+    return None
+
+
+async def _set_mosquitto_options(options: dict) -> bool:
+    """Write Mosquitto add-on options."""
+    result = await _supervisor_api("POST", f"/addons/{MOSQUITTO_SLUG}/options", {"options": options})
+    return result is not None
+
+
+async def _stop_mosquitto() -> bool:
+    """Stop the Mosquitto add-on."""
+    result = await _supervisor_api("POST", f"/addons/{MOSQUITTO_SLUG}/stop")
+    ok = result is not None
+    if ok:
+        _LOGGER.info("Stopped Mosquitto add-on")
+        await asyncio.sleep(2)  # Let it fully stop
+    return ok
+
+
+async def _start_mosquitto() -> bool:
+    """Start the Mosquitto add-on."""
+    result = await _supervisor_api("POST", f"/addons/{MOSQUITTO_SLUG}/start")
+    ok = result is not None
+    if ok:
+        _LOGGER.info("Started Mosquitto add-on")
+    return ok
+
+
+async def _restart_mosquitto() -> bool:
+    """Restart the Mosquitto add-on."""
+    result = await _supervisor_api("POST", f"/addons/{MOSQUITTO_SLUG}/restart")
+    ok = result is not None
+    if ok:
+        _LOGGER.info("Restarted Mosquitto add-on")
+    return ok
+
+
+async def _ensure_mosquitto_login(username: str, password: str) -> bool:
+    """Add feeder credentials to Mosquitto add-on logins if missing.
+
+    Uses the Supervisor API. Returns True if login was added or already exists.
+    Returns False if Supervisor is unavailable (non-HA OS installs).
+    """
+    options = await _get_mosquitto_options()
+    if options is None:
+        return False
+
+    logins: list[dict] = options.get("logins", [])
+
+    # Check if login already exists
+    for login in logins:
+        if login.get("username") == username:
+            _LOGGER.debug("Mosquitto login for %s already exists", username)
+            return True
+
+    # Add the new login
+    logins.append({"username": username, "password": password})
+    options["logins"] = logins
+
+    if not await _set_mosquitto_options(options):
+        _LOGGER.warning("Failed to set Mosquitto options")
+        return False
+
+    if not await _restart_mosquitto():
+        _LOGGER.warning("Failed to restart Mosquitto")
+        return False
+
+    _LOGGER.info("Added Mosquitto login for %s and restarted", username)
+    return True
+
+
+async def _read_mosquitto_credentials() -> tuple[str, str]:
+    """Read feeder credentials from Mosquitto add-on logins.
+
+    Returns (username, password) for the first non-HA login, or ("", "").
+    """
+    options = await _get_mosquitto_options()
+    if options is None:
+        return ("", "")
+
+    ha_usernames = {"homeassistant", "addons"}
+    for login in options.get("logins", []):
+        username = login.get("username", "")
+        if username and username not in ha_usernames:
+            return (username, login.get("password", ""))
+
+    return ("", "")
 
 
 class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -35,254 +163,219 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._serial: str = ""
-        self._model: str = ""
         self._mqtt_username: str = ""
         self._mqtt_password: str = ""
-        self._mqtt_host: str = ""
-        self._mqtt_port: int = MQTT_PORT
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle the initial step — choose setup method."""
-        return self.async_show_menu(
-            step_id="user",
-            menu_options=["auto_detect", "manual_serial"],
-        )
+        has_mqtt = await mqtt.async_wait_for_mqtt_client(self.hass)
 
-    async def async_step_manual_serial(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle manual serial/model entry."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            serial = user_input["serial"].strip().upper()
-            model = user_input.get("model", DEVICE_PRODUCT_ID).strip().upper()
-            self._serial = serial
-            self._model = model
-
-            # Check if we have known credentials for this model
-            creds = get_credentials(model)
-            if creds:
-                self._mqtt_username = creds.product_key
-                self._mqtt_password = creds.product_secret
-                _LOGGER.info(
-                    "Using known credentials for model %s (serial %s)",
-                    model, serial,
-                )
-                return await self.async_step_broker()
-
-            # Unknown model — offer sniffer or manual entry
+        if has_mqtt:
             return self.async_show_menu(
-                step_id="unknown_model",
-                menu_options=["auto_detect", "manual_credentials"],
-                description_placeholders={"model": model},
+                step_id="user",
+                menu_options=["auto_detect", "manual"],
             )
 
-        return self.async_show_form(
-            step_id="manual_serial",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("serial"): str,
-                    vol.Optional("model", default=DEVICE_PRODUCT_ID): str,
-                }
-            ),
-            errors=errors,
-        )
-
-    async def async_step_unknown_model(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Menu for unknown models — auto-detect or manual."""
-        return self.async_show_menu(
-            step_id="unknown_model",
-            menu_options=["auto_detect", "manual_credentials"],
-        )
+        # No MQTT integration — go straight to manual
+        return await self.async_step_manual()
 
     async def async_step_auto_detect(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Show DNS redirect instructions, then start sniffer."""
+        """Auto-detect: first try MQTT subscription, then fall back to sniffer."""
         if user_input is not None:
-            return await self._run_sniffer(user_input.get("listen_port", MQTT_PORT))
+            # First, try discovering via existing MQTT broker (feeder already connected)
+            result = await self._try_mqtt_discovery()
+            if result is not None:
+                return result
 
-        try:
-            ha_ip = await network.async_get_source_ip(self.hass)
-        except Exception:
-            ha_ip = "your-ha-ip"
+            # Feeder not found on broker — try the sniffer approach
+            return await self._try_sniffer_discovery()
 
         return self.async_show_form(
             step_id="auto_detect",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional("listen_port", default=MQTT_PORT): int,
-                }
-            ),
-            description_placeholders={"ha_ip": ha_ip},
+            data_schema=vol.Schema({}),
         )
 
-    async def _run_sniffer(self, port: int) -> ConfigFlowResult:
-        """Run the credential sniffer and handle results."""
-        errors: dict[str, str] = {}
+    async def _try_mqtt_discovery(self) -> ConfigFlowResult | None:
+        """Try to discover a feeder on the existing MQTT broker.
+
+        Returns a ConfigFlowResult if found, None if no feeder detected.
+        """
+        discovered: dict[str, str] | None = None
+        event = asyncio.Event()
+
+        def _on_message(msg) -> None:
+            nonlocal discovered
+            parts = msg.topic.split("/")
+            if len(parts) >= 3:
+                discovered = {"serial": parts[2].upper()}
+                event.set()
 
         try:
-            creds = await sniff_mqtt_credentials(
-                host="0.0.0.0", port=port, timeout=120
+            unsub = await mqtt.async_subscribe(
+                self.hass, DISCOVERY_TOPIC, _on_message, qos=0
             )
-            self._serial = creds.get("client_id", self._serial)
-            self._mqtt_username = creds.get("username", "")
-            self._mqtt_password = creds.get("password", "")
-
-            # Try to reverse-lookup model from captured credentials
-            model = reverse_lookup_model(self._mqtt_username)
-            if model:
-                self._model = model
-                _LOGGER.info(
-                    "Auto-detected model %s from credentials (serial %s)",
-                    model, self._serial,
-                )
-
-            return await self.async_step_auto_detect_confirm()
-
-        except CredentialSnifferError as err:
-            error_str = str(err)
-            if "in use" in error_str.lower() or "address already" in error_str.lower():
-                errors["base"] = "sniffer_port_in_use"
-            else:
-                errors["base"] = "sniffer_timeout"
-        except OSError as err:
-            if err.errno == 48:
-                errors["base"] = "sniffer_port_in_use"
-            else:
-                errors["base"] = "unknown"
-                _LOGGER.exception("Sniffer OS error")
         except Exception:
-            errors["base"] = "unknown"
-            _LOGGER.exception("Unexpected sniffer error")
+            _LOGGER.debug("MQTT subscribe failed, will try sniffer")
+            return None
 
         try:
-            ha_ip = await network.async_get_source_ip(self.hass)
-        except Exception:
-            ha_ip = "your-ha-ip"
+            # Short timeout — if feeder is already connected, heartbeat comes in <30s
+            await asyncio.wait_for(event.wait(), timeout=35)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            unsub()
 
-        return self.async_show_form(
-            step_id="auto_detect",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional("listen_port", default=port): int,
-                }
-            ),
-            errors=errors,
-            description_placeholders={"ha_ip": ha_ip},
-        )
+        if discovered is None:
+            return None
+
+        self._serial = discovered["serial"]
+
+        # Read credentials from Mosquitto options (feeder is already connected)
+        self._mqtt_username, self._mqtt_password = await _read_mosquitto_credentials()
+
+        await self.async_set_unique_id(self._serial)
+        self._abort_if_unique_id_configured()
+
+        return await self.async_step_auto_detect_confirm()
+
+    async def _try_sniffer_discovery(self) -> ConfigFlowResult:
+        """Stop Mosquitto, run credential sniffer, capture feeder CONNECT packet.
+
+        This captures the actual credentials from the wire — no hardcoded
+        credential database needed.
+        """
+        # Stop Mosquitto to free port 1883
+        stopped = await _stop_mosquitto()
+        if not stopped:
+            _LOGGER.warning("Could not stop Mosquitto — sniffer cannot bind to 1883")
+            return self.async_show_form(
+                step_id="auto_detect",
+                data_schema=vol.Schema({}),
+                errors={"base": "cannot_stop_mosquitto"},
+            )
+
+        try:
+            # Run sniffer — waits for feeder to reconnect
+            creds = await sniff_mqtt_credentials(
+                host="0.0.0.0", port=1883, timeout=SNIFFER_TIMEOUT
+            )
+
+            self._serial = creds["client_id"].upper()
+            self._mqtt_username = creds["username"]
+            self._mqtt_password = creds["password"]
+
+            _LOGGER.info(
+                "Sniffer captured: serial=%s, username=%s",
+                self._serial, self._mqtt_username,
+            )
+
+        except CredentialSnifferError as exc:
+            _LOGGER.warning("Sniffer failed: %s", exc)
+            # Restart Mosquitto before showing error
+            await _start_mosquitto()
+            return self.async_show_form(
+                step_id="auto_detect",
+                data_schema=vol.Schema({}),
+                errors={"base": "no_devices_found"},
+            )
+        except Exception:
+            _LOGGER.exception("Unexpected sniffer error")
+            await _start_mosquitto()
+            return self.async_show_form(
+                step_id="auto_detect",
+                data_schema=vol.Schema({}),
+                errors={"base": "unknown"},
+            )
+
+        # Add credentials to Mosquitto and restart it
+        await _ensure_mosquitto_login(self._mqtt_username, self._mqtt_password)
+
+        # If _ensure_mosquitto_login already restarted, we're good.
+        # If it failed (non-Supervisor), start Mosquitto manually.
+        options = await _get_mosquitto_options()
+        if options is None:
+            await _start_mosquitto()
+
+        await self.async_set_unique_id(self._serial)
+        self._abort_if_unique_id_configured()
+
+        return await self.async_step_auto_detect_confirm()
 
     async def async_step_auto_detect_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Show captured credentials for confirmation."""
+        """Show discovered device for confirmation, then create entry."""
         if user_input is not None:
             self._serial = user_input["serial"]
-            self._mqtt_username = user_input["mqtt_username"]
-            self._mqtt_password = user_input["mqtt_password"]
-            return await self.async_step_broker()
 
-        model_info = ""
-        if self._model:
-            model_info = self._model
+            # Ensure login exists in Mosquitto
+            if self._mqtt_username and self._mqtt_password:
+                await _ensure_mosquitto_login(
+                    self._mqtt_username, self._mqtt_password
+                )
+
+            await self.async_set_unique_id(self._serial)
+            self._abort_if_unique_id_configured()
+
+            return self.async_create_entry(
+                title=f"Petlibro {self._serial[-6:]}",
+                data={
+                    CONF_SERIAL: self._serial,
+                    CONF_MQTT_USERNAME: self._mqtt_username,
+                    CONF_MQTT_PASSWORD: self._mqtt_password,
+                },
+            )
 
         return self.async_show_form(
             step_id="auto_detect_confirm",
             data_schema=vol.Schema(
                 {
                     vol.Required("serial", default=self._serial): str,
-                    vol.Required("mqtt_username", default=self._mqtt_username): str,
-                    vol.Required("mqtt_password", default=self._mqtt_password): str,
                 }
             ),
-            description_placeholders={"model": model_info or "Unknown"},
+            description_placeholders={
+                "serial": self._serial,
+            },
         )
 
-    async def async_step_manual_credentials(
+    async def async_step_manual(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle manual credential entry."""
+        """Handle manual serial + credential entry."""
         if user_input is not None:
-            self._serial = user_input.get("serial", self._serial)
-            self._mqtt_username = user_input["mqtt_username"]
-            self._mqtt_password = user_input["mqtt_password"]
-            return await self.async_step_broker()
+            self._serial = user_input["serial"].strip().upper()
+            self._mqtt_username = user_input["mqtt_username"].strip()
+            self._mqtt_password = user_input["mqtt_password"].strip()
+
+            # Auto-add login to Mosquitto
+            await _ensure_mosquitto_login(
+                self._mqtt_username, self._mqtt_password
+            )
+
+            await self.async_set_unique_id(self._serial)
+            self._abort_if_unique_id_configured()
+
+            return self.async_create_entry(
+                title=f"Petlibro {self._serial[-6:]}",
+                data={
+                    CONF_SERIAL: self._serial,
+                    CONF_MQTT_USERNAME: self._mqtt_username,
+                    CONF_MQTT_PASSWORD: self._mqtt_password,
+                },
+            )
 
         return self.async_show_form(
-            step_id="manual_credentials",
+            step_id="manual",
             data_schema=vol.Schema(
                 {
-                    vol.Required("serial", default=self._serial): str,
+                    vol.Required("serial"): str,
                     vol.Required("mqtt_username"): str,
                     vol.Required("mqtt_password"): str,
                 }
             ),
         )
-
-    async def async_step_broker(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Configure the MQTT broker connection."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            self._mqtt_host = user_input["mqtt_host"]
-            self._mqtt_port = user_input["mqtt_port"]
-
-            connected = await self._test_mqtt_connection()
-            if connected:
-                await self.async_set_unique_id(self._serial)
-                self._abort_if_unique_id_configured()
-
-                return self.async_create_entry(
-                    title=f"Petlibro {self._serial[-6:]}",
-                    data={
-                        CONF_SERIAL: self._serial,
-                        CONF_MQTT_USERNAME: self._mqtt_username,
-                        CONF_MQTT_PASSWORD: self._mqtt_password,
-                        CONF_MQTT_HOST: self._mqtt_host,
-                        CONF_MQTT_PORT: self._mqtt_port,
-                    },
-                )
-            errors["base"] = "cannot_connect"
-
-        default_host = self._mqtt_host
-        if not default_host:
-            try:
-                default_host = await network.async_get_source_ip(self.hass)
-            except Exception:
-                default_host = "localhost"
-
-        return self.async_show_form(
-            step_id="broker",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("mqtt_host", default=default_host): str,
-                    vol.Required("mqtt_port", default=MQTT_PORT): int,
-                }
-            ),
-            errors=errors,
-        )
-
-    async def _test_mqtt_connection(self) -> bool:
-        """Test connectivity to the MQTT broker."""
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self._mqtt_host, self._mqtt_port),
-                timeout=5,
-            )
-            writer.close()
-            await writer.wait_closed()
-            return True
-        except Exception:
-            _LOGGER.debug(
-                "Cannot connect to MQTT broker at %s:%d",
-                self._mqtt_host,
-                self._mqtt_port,
-            )
-            return False

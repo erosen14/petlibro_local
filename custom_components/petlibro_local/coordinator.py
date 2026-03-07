@@ -12,10 +12,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
-    CONF_MQTT_HOST,
-    CONF_MQTT_PASSWORD,
-    CONF_MQTT_PORT,
-    CONF_MQTT_USERNAME,
     CONF_SERIAL,
     DOMAIN,
 )
@@ -40,10 +36,6 @@ class PetlibroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self._entry = entry
         self._serial = entry.data[CONF_SERIAL]
-        self._mqtt_host = entry.data[CONF_MQTT_HOST]
-        self._mqtt_port = entry.data[CONF_MQTT_PORT]
-        self._mqtt_username = entry.data[CONF_MQTT_USERNAME]
-        self._mqtt_password = entry.data[CONF_MQTT_PASSWORD]
 
         self.device = PetlibroDevice(
             serial=self._serial,
