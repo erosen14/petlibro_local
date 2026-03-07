@@ -3,7 +3,15 @@
     "step": {
       "user": {
         "title": "Petlibro Local Setup",
-        "description": "Enter your feeder's serial number (DL_DEVICE_ID). If your model is in the known credentials database, setup will be instant.",
+        "description": "Choose how to set up your Petlibro feeder.",
+        "menu_options": {
+          "auto_detect": "Auto-detect from device (recommended)",
+          "manual_serial": "Enter serial number manually"
+        }
+      },
+      "manual_serial": {
+        "title": "Manual Setup",
+        "description": "Enter your feeder's serial number (DL_DEVICE_ID) and model. If your model is in the known credentials database, setup will be instant.",
         "data": {
           "serial": "Device serial number",
           "model": "Device model (e.g. PLAF203)"
@@ -14,26 +22,26 @@
         "description": "No known credentials for model **{model}**. Choose how to provide MQTT credentials.",
         "menu_options": {
           "auto_detect": "Auto-detect credentials (recommended)",
-          "manual": "Enter credentials manually"
+          "manual_credentials": "Enter credentials manually"
         }
       },
       "auto_detect": {
         "title": "Auto-detect Credentials",
-        "description": "To capture your feeder's credentials:\n\n1. Add a DNS host override in your router:\n   - Hostname: **mqtt.us.petlibro.com**\n   - IP: **{ha_ip}**\n2. Click **Submit** to start listening\n3. Wait for the feeder to reconnect (~30-90 seconds)",
+        "description": "To capture your feeder's credentials:\n\n1. Add a DNS host override in your router:\n   - Hostname: **mqtt.us.petlibro.com**\n   - IP: **{ha_ip}**\n2. Click **Submit** to start listening\n3. Wait for the feeder to reconnect (~30-90 seconds)\n\nThe serial number, model, and credentials will all be captured automatically.",
         "data": {
           "listen_port": "Listen port"
         }
       },
       "auto_detect_confirm": {
         "title": "Credentials Captured",
-        "description": "Successfully captured credentials from your Petlibro feeder! Please consider submitting these to the project so other users with your model don't need to sniff.",
+        "description": "Successfully captured credentials from your Petlibro feeder (model: **{model}**)! Please consider submitting these to the project so other users with your model don't need to sniff.",
         "data": {
           "serial": "Device serial number",
           "mqtt_username": "MQTT username (DL_PRODUCT_KEY)",
           "mqtt_password": "MQTT password (DL_PRODUCT_SECRET)"
         }
       },
-      "manual": {
+      "manual_credentials": {
         "title": "Manual Credential Entry",
         "description": "Enter the MQTT credentials from your feeder's CONNECT packet or serial console output.",
         "data": {

@@ -22,7 +22,7 @@ from .const import (
     MQTT_PORT,
 )
 from .credential_sniffer import CredentialSnifferError, sniff_mqtt_credentials
-from .known_credentials import get_credentials, is_model_known
+from .known_credentials import get_credentials, reverse_lookup_model
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._serial: str = ""
+        self._model: str = ""
         self._mqtt_username: str = ""
         self._mqtt_password: str = ""
         self._mqtt_host: str = ""
@@ -43,13 +44,23 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial step — enter serial number."""
+        """Handle the initial step — choose setup method."""
+        return self.async_show_menu(
+            step_id="user",
+            menu_options=["auto_detect", "manual_serial"],
+        )
+
+    async def async_step_manual_serial(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle manual serial/model entry."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
             serial = user_input["serial"].strip().upper()
             model = user_input.get("model", DEVICE_PRODUCT_ID).strip().upper()
             self._serial = serial
+            self._model = model
 
             # Check if we have known credentials for this model
             creds = get_credentials(model)
@@ -65,12 +76,12 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             # Unknown model — offer sniffer or manual entry
             return self.async_show_menu(
                 step_id="unknown_model",
-                menu_options=["auto_detect", "manual"],
+                menu_options=["auto_detect", "manual_credentials"],
                 description_placeholders={"model": model},
             )
 
         return self.async_show_form(
-            step_id="user",
+            step_id="manual_serial",
             data_schema=vol.Schema(
                 {
                     vol.Required("serial"): str,
@@ -86,7 +97,7 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
         """Menu for unknown models — auto-detect or manual."""
         return self.async_show_menu(
             step_id="unknown_model",
-            menu_options=["auto_detect", "manual"],
+            menu_options=["auto_detect", "manual_credentials"],
         )
 
     async def async_step_auto_detect(
@@ -122,6 +133,15 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             self._serial = creds.get("client_id", self._serial)
             self._mqtt_username = creds.get("username", "")
             self._mqtt_password = creds.get("password", "")
+
+            # Try to reverse-lookup model from captured credentials
+            model = reverse_lookup_model(self._mqtt_username)
+            if model:
+                self._model = model
+                _LOGGER.info(
+                    "Auto-detected model %s from credentials (serial %s)",
+                    model, self._serial,
+                )
 
             return await self.async_step_auto_detect_confirm()
 
@@ -167,6 +187,10 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             self._mqtt_password = user_input["mqtt_password"]
             return await self.async_step_broker()
 
+        model_info = ""
+        if self._model:
+            model_info = self._model
+
         return self.async_show_form(
             step_id="auto_detect_confirm",
             data_schema=vol.Schema(
@@ -176,9 +200,10 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required("mqtt_password", default=self._mqtt_password): str,
                 }
             ),
+            description_placeholders={"model": model_info or "Unknown"},
         )
 
-    async def async_step_manual(
+    async def async_step_manual_credentials(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle manual credential entry."""
@@ -189,7 +214,7 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self.async_step_broker()
 
         return self.async_show_form(
-            step_id="manual",
+            step_id="manual_credentials",
             data_schema=vol.Schema(
                 {
                     vol.Required("serial", default=self._serial): str,

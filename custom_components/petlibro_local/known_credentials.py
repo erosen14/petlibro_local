@@ -48,3 +48,11 @@ def get_credentials(model: str) -> DeviceCredentials | None:
 def is_model_known(model: str) -> bool:
     """Check if credentials are known for this model."""
     return model.upper() in KNOWN_CREDENTIALS
+
+
+def reverse_lookup_model(product_key: str) -> str | None:
+    """Find the model for a given product_key (from sniffed credentials)."""
+    for model, creds in KNOWN_CREDENTIALS.items():
+        if creds.product_key == product_key:
+            return model
+    return None
