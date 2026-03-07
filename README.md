@@ -23,7 +23,7 @@ This integration:
 | PLAF203 / PLAF203S | Tested |
 | Other models | Should work |
 
-> The auto-detect setup flow captures your feeder's MQTT credentials directly from its connection attempt — no manual credential entry or firmware sniffing needed. The credentials (product key and secret) are hard-coded per model in the firmware and identical across all devices of the same model.
+> The auto-detect setup flow captures your feeder's MQTT credentials directly from its connection attempt — no manual credential entry or firmware sniffing needed. The credentials (product key and secret) are [hard-coded per model in the firmware](https://securelist.com/smart-pet-feeder-vulnerabilities/110028/) and identical across all devices of the same model.
 
 ## Features
 
@@ -129,7 +129,7 @@ logger:
 
 This integration builds on the protocol reverse engineering work from the [plaf203](https://github.com/icex2/plaf203) project by [@icex2](https://github.com/icex2). That project documented the full Petlibro MQTT protocol, message formats, and topic structure as an AppDaemon prototype. The protocol layer in this integration is derived from that research.
 
-Security research by [Kaspersky Securelist](https://securelist.com/) confirmed that MQTT credentials are hard-coded per device model in the firmware, enabling the known credentials database that makes setup instant for supported models.
+Security research by [Kaspersky Securelist](https://securelist.com/smart-pet-feeder-vulnerabilities/110028/) confirmed that MQTT credentials are hard-coded per device model in smart pet feeder firmware — a vulnerability class shared across brands including Petlibro.
 
 ## Contributing
 
@@ -137,7 +137,6 @@ Contributions are welcome. The most impactful way to help:
 
 - **Test on different models** — The auto-detect flow captures credentials automatically from any Petlibro feeder
 - **Report issues** — File bugs or feature requests on the [issue tracker](https://github.com/erosen14/petlibro_local/issues)
-- **Test on different models** — The protocol should work across Petlibro's MQTT-based product line
 
 ## License
 
