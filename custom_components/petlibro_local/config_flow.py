@@ -103,11 +103,12 @@ async def _restart_mosquitto() -> bool:
     return ok
 
 
-async def _ensure_mosquitto_login(username: str, password: str) -> bool:
+async def _add_mosquitto_login(username: str, password: str) -> bool:
     """Add feeder credentials to Mosquitto add-on logins if missing.
 
-    Uses the Supervisor API. Returns True if login was added or already exists.
-    Returns False if Supervisor is unavailable (non-HA OS installs).
+    Only writes the config — does NOT restart Mosquitto.
+    Caller is responsible for restarting/starting Mosquitto afterward.
+    Returns True if login was added or already exists.
     """
     options = await _get_mosquitto_options()
     if options is None:
@@ -115,13 +116,11 @@ async def _ensure_mosquitto_login(username: str, password: str) -> bool:
 
     logins: list[dict] = options.get("logins", [])
 
-    # Check if login already exists
     for login in logins:
         if login.get("username") == username:
             _LOGGER.debug("Mosquitto login for %s already exists", username)
             return True
 
-    # Add the new login
     logins.append({"username": username, "password": password})
     options["logins"] = logins
 
@@ -129,11 +128,15 @@ async def _ensure_mosquitto_login(username: str, password: str) -> bool:
         _LOGGER.warning("Failed to set Mosquitto options")
         return False
 
-    if not await _restart_mosquitto():
-        _LOGGER.warning("Failed to restart Mosquitto")
-        return False
+    _LOGGER.info("Added Mosquitto login for %s", username)
+    return True
 
-    _LOGGER.info("Added Mosquitto login for %s and restarted", username)
+
+async def _ensure_mosquitto_login(username: str, password: str) -> bool:
+    """Add login and restart Mosquitto. Use when Mosquitto is already running."""
+    if not await _add_mosquitto_login(username, password):
+        return False
+    await _restart_mosquitto()
     return True
 
 
@@ -292,14 +295,10 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors={"base": "unknown"},
             )
 
-        # Add credentials to Mosquitto and restart it
-        await _ensure_mosquitto_login(self._mqtt_username, self._mqtt_password)
-
-        # If _ensure_mosquitto_login already restarted, we're good.
-        # If it failed (non-Supervisor), start Mosquitto manually.
-        options = await _get_mosquitto_options()
-        if options is None:
-            await _start_mosquitto()
+        # Add credentials to Mosquitto config, then start it
+        # (Mosquitto is currently stopped from the sniffer phase)
+        await _add_mosquitto_login(self._mqtt_username, self._mqtt_password)
+        await _start_mosquitto()
 
         await self.async_set_unique_id(self._serial)
         self._abort_if_unique_id_configured()
