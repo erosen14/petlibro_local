@@ -1,0 +1,86 @@
+manual_feed:
+  name: Manual Feed
+  description: Dispense food manually
+  target:
+    device:
+      integration: petlibro_local
+  fields:
+    portions:
+      name: Portions
+      description: Number of portions to dispense
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 20
+          step: 1
+
+set_feeding_plan:
+  name: Set Feeding Plan
+  description: Set a feeding schedule plan
+  target:
+    device:
+      integration: petlibro_local
+  fields:
+    plan_id:
+      name: Plan ID
+      description: Plan slot number (1-9)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 9
+          step: 1
+    time:
+      name: Time
+      description: Feeding time (HH:MM in local timezone)
+      required: true
+      selector:
+        time:
+    portions:
+      name: Portions
+      description: Number of portions to dispense
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 20
+          step: 1
+    days:
+      name: Days
+      description: Days of the week (1=Mon, 7=Sun). Empty = every day.
+      required: false
+      selector:
+        select:
+          options:
+            - label: Monday
+              value: "1"
+            - label: Tuesday
+              value: "2"
+            - label: Wednesday
+              value: "3"
+            - label: Thursday
+              value: "4"
+            - label: Friday
+              value: "5"
+            - label: Saturday
+              value: "6"
+            - label: Sunday
+              value: "7"
+          multiple: true
+    enable_audio:
+      name: Play Audio
+      description: Play feeding audio announcement
+      required: false
+      default: true
+      selector:
+        boolean:
+
+clear_feeding_plans:
+  name: Clear Feeding Plans
+  description: Remove all feeding plans
+  target:
+    device:
+      integration: petlibro_local
