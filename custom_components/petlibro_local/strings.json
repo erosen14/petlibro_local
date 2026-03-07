@@ -3,44 +3,48 @@
     "step": {
       "user": {
         "title": "Petlibro Local Setup",
-        "description": "Choose how to set up your Petlibro feeder for local control.",
+        "description": "Enter your feeder's serial number (DL_DEVICE_ID). If your model is in the known credentials database, setup will be instant.",
+        "data": {
+          "serial": "Device serial number",
+          "model": "Device model (e.g. PLAF203)"
+        }
+      },
+      "unknown_model": {
+        "title": "Unknown Model",
+        "description": "No known credentials for model **{model}**. Choose how to provide MQTT credentials.",
         "menu_options": {
           "auto_detect": "Auto-detect credentials (recommended)",
           "manual": "Enter credentials manually"
         }
       },
-      "auto_detect_dns": {
-        "title": "DNS Redirect Setup",
-        "description": "To capture your feeder's credentials, you need to temporarily redirect its MQTT traffic to Home Assistant.\n\n1. Add a DNS host override in your router (OPNsense, Pi-hole, etc.):\n   - Hostname: **mqtt.us.petlibro.com**\n   - IP: **{ha_ip}**\n2. Wait for the feeder to reconnect (~30 seconds)\n3. Click **Submit** to start listening for the connection",
+      "auto_detect": {
+        "title": "Auto-detect Credentials",
+        "description": "To capture your feeder's credentials:\n\n1. Add a DNS host override in your router:\n   - Hostname: **mqtt.us.petlibro.com**\n   - IP: **{ha_ip}**\n2. Click **Submit** to start listening\n3. Wait for the feeder to reconnect (~30-90 seconds)",
         "data": {
           "listen_port": "Listen port"
         }
       },
-      "auto_detect_wait": {
-        "title": "Waiting for Feeder Connection",
-        "description": "Listening on port {port} for MQTT CONNECT from your Petlibro feeder...\n\nMake sure the DNS override is active. The feeder should reconnect within 30-60 seconds."
-      },
       "auto_detect_confirm": {
         "title": "Credentials Captured",
-        "description": "Successfully captured credentials from your Petlibro feeder!",
+        "description": "Successfully captured credentials from your Petlibro feeder! Please consider submitting these to the project so other users with your model don't need to sniff.",
         "data": {
           "serial": "Device serial number",
-          "mqtt_username": "MQTT username",
-          "mqtt_password": "MQTT password"
+          "mqtt_username": "MQTT username (DL_PRODUCT_KEY)",
+          "mqtt_password": "MQTT password (DL_PRODUCT_SECRET)"
         }
       },
       "manual": {
         "title": "Manual Credential Entry",
-        "description": "Enter the MQTT credentials captured from your feeder's CONNECT packet.",
+        "description": "Enter the MQTT credentials from your feeder's CONNECT packet or serial console output.",
         "data": {
           "serial": "Device serial number",
-          "mqtt_username": "MQTT username",
-          "mqtt_password": "MQTT password"
+          "mqtt_username": "MQTT username (DL_PRODUCT_KEY)",
+          "mqtt_password": "MQTT password (DL_PRODUCT_SECRET)"
         }
       },
       "broker": {
         "title": "MQTT Broker",
-        "description": "Enter the MQTT broker details. This should be your local Mosquitto broker that the feeder connects to after DNS redirect.",
+        "description": "Enter your local MQTT broker details. The feeder must be redirected to this broker via DNS override.",
         "data": {
           "mqtt_host": "Broker host",
           "mqtt_port": "Broker port"

@@ -17,10 +17,12 @@ from .const import (
     CONF_MQTT_PORT,
     CONF_MQTT_USERNAME,
     CONF_SERIAL,
+    DEVICE_PRODUCT_ID,
     DOMAIN,
     MQTT_PORT,
 )
 from .credential_sniffer import CredentialSnifferError, sniff_mqtt_credentials
+from .known_credentials import get_credentials, is_model_known
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,9 +43,49 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial step — choose auto-detect or manual."""
-        return self.async_show_menu(
+        """Handle the initial step — enter serial number."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            serial = user_input["serial"].strip().upper()
+            model = user_input.get("model", DEVICE_PRODUCT_ID).strip().upper()
+            self._serial = serial
+
+            # Check if we have known credentials for this model
+            creds = get_credentials(model)
+            if creds:
+                self._mqtt_username = creds.product_key
+                self._mqtt_password = creds.product_secret
+                _LOGGER.info(
+                    "Using known credentials for model %s (serial %s)",
+                    model, serial,
+                )
+                return await self.async_step_broker()
+
+            # Unknown model — offer sniffer or manual entry
+            return self.async_show_menu(
+                step_id="unknown_model",
+                menu_options=["auto_detect", "manual"],
+                description_placeholders={"model": model},
+            )
+
+        return self.async_show_form(
             step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("serial"): str,
+                    vol.Optional("model", default=DEVICE_PRODUCT_ID): str,
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_unknown_model(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Menu for unknown models — auto-detect or manual."""
+        return self.async_show_menu(
+            step_id="unknown_model",
             menu_options=["auto_detect", "manual"],
         )
 
@@ -54,7 +96,6 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return await self._run_sniffer(user_input.get("listen_port", MQTT_PORT))
 
-        # Get HA's IP for the instructions
         try:
             ha_ip = await network.async_get_source_ip(self.hass)
         except Exception:
@@ -78,7 +119,7 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             creds = await sniff_mqtt_credentials(
                 host="0.0.0.0", port=port, timeout=120
             )
-            self._serial = creds.get("client_id", "")
+            self._serial = creds.get("client_id", self._serial)
             self._mqtt_username = creds.get("username", "")
             self._mqtt_password = creds.get("password", "")
 
@@ -91,7 +132,7 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 errors["base"] = "sniffer_timeout"
         except OSError as err:
-            if err.errno == 48:  # Address already in use
+            if err.errno == 48:
                 errors["base"] = "sniffer_port_in_use"
             else:
                 errors["base"] = "unknown"
@@ -100,7 +141,6 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             errors["base"] = "unknown"
             _LOGGER.exception("Unexpected sniffer error")
 
-        # Retry — show the DNS instructions again with error
         try:
             ha_ip = await network.async_get_source_ip(self.hass)
         except Exception:
@@ -143,7 +183,7 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle manual credential entry."""
         if user_input is not None:
-            self._serial = user_input["serial"]
+            self._serial = user_input.get("serial", self._serial)
             self._mqtt_username = user_input["mqtt_username"]
             self._mqtt_password = user_input["mqtt_password"]
             return await self.async_step_broker()
@@ -152,7 +192,7 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="manual",
             data_schema=vol.Schema(
                 {
-                    vol.Required("serial"): str,
+                    vol.Required("serial", default=self._serial): str,
                     vol.Required("mqtt_username"): str,
                     vol.Required("mqtt_password"): str,
                 }
@@ -169,7 +209,6 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
             self._mqtt_host = user_input["mqtt_host"]
             self._mqtt_port = user_input["mqtt_port"]
 
-            # Test MQTT connection
             connected = await self._test_mqtt_connection()
             if connected:
                 await self.async_set_unique_id(self._serial)
@@ -187,7 +226,6 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             errors["base"] = "cannot_connect"
 
-        # Default broker host to HA IP
         default_host = self._mqtt_host
         if not default_host:
             try:
