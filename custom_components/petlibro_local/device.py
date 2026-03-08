@@ -18,6 +18,7 @@ from .const import (
     CMD_ATTR_PUSH_EVENT,
     CMD_ATTR_SET_SERVICE,
     CMD_BINDING,
+    CMD_DETECTION_EVENT,
     CMD_DEVICE_START_EVENT,
     CMD_ERROR_EVENT,
     CMD_FEEDING_PLAN_SERVICE,
@@ -340,6 +341,26 @@ class PetlibroDevice:
             build_response(CMD_RESET, msg_id),
         )
 
+    async def _handle_detection_event(self, payload: dict) -> None:
+        """Motion or sound detection event from device camera."""
+        msg_id = payload.get("msgId")
+        detection_type = payload.get("type", "UNKNOWN")
+        ts = payload.get("ts")
+        _LOGGER.debug(
+            "Device %s detection: type=%s ts=%s", self.serial, detection_type, ts
+        )
+
+        # Acknowledge
+        await self._publish(
+            self.topics.event_sub,
+            build_response(CMD_DETECTION_EVENT, msg_id),
+        )
+
+        # Store in state for the event entity to pick up
+        self.state["detection_type"] = detection_type
+        self.state["detection_ts"] = ts
+        self._notify_state_changed()
+
     # --- Handler dispatch table ---
 
     _HANDLERS: dict[str, Callable] = {
@@ -355,6 +376,7 @@ class PetlibroDevice:
         CMD_FEEDING_PLAN_SERVICE: _handle_feeding_plan_response,
         CMD_MANUAL_FEEDING_SERVICE: _handle_manual_feeding_response,
         CMD_ERROR_EVENT: _handle_error_event,
+        CMD_DETECTION_EVENT: _handle_detection_event,
         CMD_GET_CONFIG: _handle_get_config,
         CMD_BINDING: _handle_binding,
         CMD_RESET: _handle_reset,

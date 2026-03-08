@@ -15,6 +15,8 @@ EVENT_FEEDING_COMPLETE = "feeding_complete"
 EVENT_FEEDING_STARTED = "feeding_started"
 EVENT_FEEDING_BLOCKED = "feeding_blocked"
 EVENT_ERROR = "error"
+EVENT_MOTION_DETECTED = "motion_detected"
+EVENT_SOUND_DETECTED = "sound_detected"
 
 
 async def async_setup_entry(
@@ -25,6 +27,7 @@ async def async_setup_entry(
     async_add_entities([
         PetlibroFeedingEvent(coordinator),
         PetlibroErrorEvent(coordinator),
+        PetlibroDetectionEvent(coordinator),
     ])
 
 
@@ -87,5 +90,39 @@ class PetlibroErrorEvent(PetlibroEntity, EventEntity):
         if error and error != self._last_error:
             self._trigger_event(EVENT_ERROR, {"error_code": error})
             self._last_error = error
+
+        self.async_write_ha_state()
+
+
+class PetlibroDetectionEvent(PetlibroEntity, EventEntity):
+    _attr_name = "Detection"
+    _attr_event_types = [EVENT_MOTION_DETECTED, EVENT_SOUND_DETECTED]
+    _attr_icon = "mdi:motion-sensor"
+
+    def __init__(self, coordinator: PetlibroCoordinator) -> None:
+        super().__init__(coordinator)
+        self._last_detection_ts: int | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._device.serial}_detection_event"
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Fire events on motion/sound detection."""
+        detection_type = self.coordinator.data.get("detection_type")
+        detection_ts = self.coordinator.data.get("detection_ts")
+
+        if detection_ts and detection_ts != self._last_detection_ts:
+            if detection_type == "MOTION":
+                self._trigger_event(EVENT_MOTION_DETECTED, {"timestamp": detection_ts})
+            elif detection_type == "SOUND":
+                self._trigger_event(EVENT_SOUND_DETECTED, {"timestamp": detection_ts})
+            else:
+                self._trigger_event(
+                    EVENT_MOTION_DETECTED,
+                    {"type": detection_type, "timestamp": detection_ts},
+                )
+            self._last_detection_ts = detection_ts
 
         self.async_write_ha_state()

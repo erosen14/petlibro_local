@@ -46,6 +46,11 @@ class PetlibroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt_client: Any = None
         self._unsubscribe: list = []
 
+    @property
+    def entry(self) -> ConfigEntry:
+        """Return the config entry."""
+        return self._entry
+
     async def async_setup(self) -> None:
         """Set up MQTT connection and subscribe to device topics."""
         from homeassistant.components import mqtt

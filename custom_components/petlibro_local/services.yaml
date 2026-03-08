@@ -78,6 +78,23 @@ set_feeding_plan:
       selector:
         boolean:
 
+remove_feeding_plan:
+  name: Remove Feeding Plan
+  description: Remove a specific feeding plan by its slot number
+  target:
+    device:
+      integration: petlibro_local
+  fields:
+    plan_id:
+      name: Plan ID
+      description: Plan slot number to remove (1-9)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 9
+          step: 1
+
 clear_feeding_plans:
   name: Clear Feeding Plans
   description: Remove all feeding plans

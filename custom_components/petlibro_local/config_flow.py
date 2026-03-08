@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import os
 from typing import Any
@@ -10,14 +11,21 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithConfigEntry,
+)
 from homeassistant.components import mqtt
 
 from .const import (
+    CONF_FEEDING_PLANS,
     CONF_MQTT_USERNAME,
     CONF_MQTT_PASSWORD,
     CONF_SERIAL,
     DOMAIN,
+    MAX_FEEDING_PLANS,
 )
 from .credential_sniffer import sniff_mqtt_credentials, CredentialSnifferError
 
@@ -162,6 +170,13 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Petlibro Local."""
 
     VERSION = 1
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> PetlibroOptionsFlow:
+        """Create the options flow."""
+        return PetlibroOptionsFlow(config_entry)
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -377,4 +392,295 @@ class PetlibroLocalConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required("mqtt_password"): str,
                 }
             ),
+        )
+
+
+# --- Helpers for feeding plan time conversion ---
+
+DAY_NAMES = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 7: "Sun"}
+
+
+def _utc_to_local_time(utc_time_str: str) -> str:
+    """Convert UTC HH:MM to local HH:MM for display."""
+    try:
+        h, m = map(int, utc_time_str.split(":"))
+        utc_dt = datetime.datetime.combine(
+            datetime.date.today(),
+            datetime.time(h, m),
+            tzinfo=datetime.timezone.utc,
+        )
+        local_dt = utc_dt.astimezone()
+        return local_dt.strftime("%-I:%M %p")
+    except (ValueError, AttributeError):
+        return utc_time_str
+
+
+def _local_to_utc_time_str(local_time_str: str) -> str:
+    """Convert local HH:MM:SS or HH:MM to UTC HH:MM string."""
+    parts = local_time_str.split(":")
+    h, m = int(parts[0]), int(parts[1])
+    local_dt = datetime.datetime.combine(
+        datetime.date.today(),
+        datetime.time(h, m),
+        tzinfo=datetime.datetime.now().astimezone().tzinfo,
+    )
+    utc_dt = local_dt.astimezone(datetime.timezone.utc)
+    return f"{utc_dt.hour:02}:{utc_dt.minute:02}"
+
+
+def _format_plan_summary(plan: dict) -> str:
+    """Format a single plan as a human-readable summary."""
+    local_time = _utc_to_local_time(plan.get("executionTime", "??:??"))
+    portions = plan.get("grainNum", 1)
+    repeat_day = plan.get("repeatDay", [])
+    active_days = [d for d in repeat_day if d > 0]
+
+    if not active_days or set(active_days) == {1, 2, 3, 4, 5, 6, 7}:
+        days_str = "daily"
+    elif set(active_days) == {1, 2, 3, 4, 5}:
+        days_str = "weekdays"
+    elif set(active_days) == {6, 7}:
+        days_str = "weekends"
+    else:
+        days_str = ", ".join(DAY_NAMES.get(d, str(d)) for d in sorted(active_days))
+
+    return f"{local_time} — {portions} portion(s), {days_str}"
+
+
+class PetlibroOptionsFlow(OptionsFlowWithConfigEntry):
+    """Handle options for Petlibro Local."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Main menu: show current plans and options."""
+        plans: list[dict] = list(self.options.get(CONF_FEEDING_PLANS, []))
+        plan_count = len(plans)
+
+        if plan_count == 0:
+            description = "No feeding plans configured."
+        else:
+            lines = [f"**{plan_count} feeding plan(s):**"]
+            for plan in sorted(plans, key=lambda p: p.get("planId", 0)):
+                slot = plan.get("planId", "?")
+                lines.append(f"- Slot {slot}: {_format_plan_summary(plan)}")
+            description = "\n".join(lines)
+
+        menu_options = ["add_plan", "quick_setup"]
+        if plan_count > 0:
+            menu_options.append("remove_plan")
+            menu_options.append("clear_plans")
+
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=menu_options,
+            description_placeholders={"schedule_summary": description},
+        )
+
+    async def async_step_add_plan(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Add a feeding plan with time, portions, and days."""
+        plans: list[dict] = list(self.options.get(CONF_FEEDING_PLANS, []))
+
+        if user_input is not None:
+            plan_id = user_input["plan_id"]
+            time_val = user_input["time"]
+            portions = user_input["portions"]
+            days_input = user_input.get("days", [])
+            enable_audio = user_input.get("enable_audio", True)
+
+            # Convert local time to UTC
+            execution_time = _local_to_utc_time_str(str(time_val))
+
+            # Build repeat_day array
+            if days_input:
+                repeat_day = [int(d) for d in days_input]
+            else:
+                repeat_day = [1, 2, 3, 4, 5, 6, 7]
+            repeat_day.extend([0] * (7 - len(repeat_day)))
+
+            from .protocol.codec import timestamp_now_ms
+
+            plan = {
+                "planId": plan_id,
+                "executionTime": execution_time,
+                "repeatDay": repeat_day,
+                "enableAudio": enable_audio,
+                "audioTimes": 3,
+                "grainNum": portions,
+                "syncTime": timestamp_now_ms(),
+            }
+
+            # Replace or add
+            plans = [p for p in plans if p.get("planId") != plan_id]
+            plans.append(plan)
+            plans.sort(key=lambda p: p.get("planId", 0))
+
+            # Save and sync to device
+            return await self._save_plans_and_finish(plans)
+
+        # Find next available slot
+        used_slots = {p.get("planId") for p in plans}
+        next_slot = 1
+        for i in range(1, MAX_FEEDING_PLANS + 1):
+            if i not in used_slots:
+                next_slot = i
+                break
+
+        data_schema = vol.Schema(
+            {
+                vol.Required("plan_id", default=next_slot): vol.All(
+                    int, vol.Range(min=1, max=MAX_FEEDING_PLANS)
+                ),
+                vol.Required("time"): str,
+                vol.Required("portions", default=1): vol.All(
+                    int, vol.Range(min=1, max=20)
+                ),
+                vol.Optional("days", default=[]): vol.All(
+                    vol.Coerce(list),
+                    [vol.In(["1", "2", "3", "4", "5", "6", "7"])],
+                ),
+                vol.Optional("enable_audio", default=True): bool,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="add_plan",
+            data_schema=data_schema,
+        )
+
+    async def async_step_remove_plan(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Remove a specific plan."""
+        plans: list[dict] = list(self.options.get(CONF_FEEDING_PLANS, []))
+
+        if user_input is not None:
+            plan_id = int(user_input["plan_to_remove"])
+            plans = [p for p in plans if p.get("planId") != plan_id]
+            return await self._save_plans_and_finish(plans)
+
+        # Build options from current plans
+        plan_options = {}
+        for plan in sorted(plans, key=lambda p: p.get("planId", 0)):
+            slot = plan.get("planId", 0)
+            plan_options[str(slot)] = f"Slot {slot}: {_format_plan_summary(plan)}"
+
+        if not plan_options:
+            return self.async_abort(reason="no_plans")
+
+        return self.async_show_form(
+            step_id="remove_plan",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("plan_to_remove"): vol.In(plan_options),
+                }
+            ),
+        )
+
+    async def async_step_clear_plans(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Clear all feeding plans."""
+        if user_input is not None:
+            if user_input.get("confirm", False):
+                return await self._save_plans_and_finish([])
+            # Not confirmed — go back to menu
+            return await self.async_step_init()
+
+        return self.async_show_form(
+            step_id="clear_plans",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("confirm", default=False): bool,
+                }
+            ),
+        )
+
+    async def async_step_quick_setup(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Quick setup: feed every X hours with Y portions."""
+        if user_input is not None:
+            interval = int(user_input["interval"])
+            portions = user_input["portions"]
+            start_hour = int(user_input.get("start_hour", 8))
+            enable_audio = user_input.get("enable_audio", True)
+
+            from .protocol.codec import timestamp_now_ms
+
+            plans = []
+            plan_id = 1
+            hour = start_hour
+            while hour < 24 and plan_id <= MAX_FEEDING_PLANS:
+                # Convert local hour to UTC
+                execution_time = _local_to_utc_time_str(f"{hour:02}:00")
+
+                plans.append({
+                    "planId": plan_id,
+                    "executionTime": execution_time,
+                    "repeatDay": [1, 2, 3, 4, 5, 6, 7],
+                    "enableAudio": enable_audio,
+                    "audioTimes": 3,
+                    "grainNum": portions,
+                    "syncTime": timestamp_now_ms(),
+                })
+                plan_id += 1
+                hour += interval
+
+            return await self._save_plans_and_finish(plans)
+
+        data_schema = vol.Schema(
+            {
+                vol.Required("interval", default="8"): vol.In(
+                    {
+                        "4": "Every 4 hours (6 feeds/day)",
+                        "6": "Every 6 hours (3 feeds/day)",
+                        "8": "Every 8 hours (2 feeds/day)",
+                        "12": "Every 12 hours (2 feeds/day)",
+                        "24": "Once a day",
+                    }
+                ),
+                vol.Required("portions", default=1): vol.All(
+                    int, vol.Range(min=1, max=20)
+                ),
+                vol.Required("start_hour", default="8"): vol.In(
+                    {
+                        "6": "6:00 AM",
+                        "7": "7:00 AM",
+                        "8": "8:00 AM",
+                        "9": "9:00 AM",
+                        "10": "10:00 AM",
+                    }
+                ),
+                vol.Optional("enable_audio", default=True): bool,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="quick_setup",
+            data_schema=data_schema,
+        )
+
+    async def _save_plans_and_finish(
+        self, plans: list[dict]
+    ) -> ConfigFlowResult:
+        """Save plans to options, sync to device, and close the flow."""
+        # Sync to device if coordinator is available
+        entry = self.config_entry
+        if hasattr(entry, "runtime_data") and entry.runtime_data:
+            coordinator = entry.runtime_data
+            coordinator.device.feeding_plans = plans
+            await coordinator.device.set_feeding_plans(plans)
+
+            # Trigger sensor update
+            from .protocol.codec import timestamp_now_ms
+
+            coordinator.device.state["_feeding_plans_version"] = timestamp_now_ms()
+            coordinator.device._notify_state_changed()
+
+        return self.async_create_entry(
+            title="",
+            data={CONF_FEEDING_PLANS: plans},
         )

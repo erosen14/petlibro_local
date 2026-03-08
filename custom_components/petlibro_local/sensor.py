@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -13,11 +15,16 @@ from homeassistant.const import (
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .entity import PetlibroEntity
 from .coordinator import PetlibroCoordinator
+
+DAY_NAMES = {
+    1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu",
+    5: "Fri", 6: "Sat", 7: "Sun",
+}
 
 
 async def async_setup_entry(
@@ -40,6 +47,7 @@ async def async_setup_entry(
         PetlibroPowerTypeSensor(coordinator),
         PetlibroSdCardCapacitySensor(coordinator),
         PetlibroSdCardUsedSensor(coordinator),
+        PetlibroFeedingScheduleSensor(coordinator),
     ])
 
 
@@ -241,3 +249,144 @@ class PetlibroSdCardUsedSensor(PetlibroEntity, SensorEntity):
     @property
     def native_value(self):
         return self.coordinator.data.get("sd_card_used_capacity")
+
+
+def _utc_to_local(utc_time_str: str) -> str:
+    """Convert UTC HH:MM string to local timezone HH:MM AM/PM."""
+    try:
+        h, m = map(int, utc_time_str.split(":"))
+        utc_dt = datetime.datetime.combine(
+            datetime.date.today(),
+            datetime.time(h, m),
+            tzinfo=datetime.timezone.utc,
+        )
+        local_dt = utc_dt.astimezone()
+        return local_dt.strftime("%-I:%M %p")
+    except (ValueError, AttributeError):
+        return utc_time_str
+
+
+def _utc_to_local_24h(utc_time_str: str) -> str:
+    """Convert UTC HH:MM to local HH:MM in 24-hour format (for form inputs)."""
+    try:
+        h, m = map(int, utc_time_str.split(":"))
+        utc_dt = datetime.datetime.combine(
+            datetime.date.today(),
+            datetime.time(h, m),
+            tzinfo=datetime.timezone.utc,
+        )
+        local_dt = utc_dt.astimezone()
+        return f"{local_dt.hour:02}:{local_dt.minute:02}"
+    except (ValueError, AttributeError):
+        return utc_time_str
+
+
+def _format_days(repeat_day: list[int]) -> str:
+    """Format repeatDay array to human-readable string."""
+    active_days = [d for d in repeat_day if d > 0]
+    if not active_days or set(active_days) == {1, 2, 3, 4, 5, 6, 7}:
+        return "Every day"
+    if set(active_days) == {1, 2, 3, 4, 5}:
+        return "Weekdays"
+    if set(active_days) == {6, 7}:
+        return "Weekends"
+    return ", ".join(DAY_NAMES.get(d, str(d)) for d in sorted(active_days))
+
+
+def _next_feed_time(plans: list[dict]) -> str | None:
+    """Calculate the next scheduled feed time from plans."""
+    if not plans:
+        return None
+
+    now = datetime.datetime.now().astimezone()
+    today_weekday = now.isoweekday()  # 1=Mon, 7=Sun
+
+    candidates = []
+    for plan in plans:
+        exec_time = plan.get("executionTime", "")
+        repeat_day = plan.get("repeatDay", [])
+        active_days = [d for d in repeat_day if d > 0]
+        if not active_days:
+            active_days = [1, 2, 3, 4, 5, 6, 7]
+
+        try:
+            h, m = map(int, exec_time.split(":"))
+        except (ValueError, AttributeError):
+            continue
+
+        # Check each day for next 7 days
+        for offset in range(8):
+            check_day = ((today_weekday - 1 + offset) % 7) + 1
+            if check_day in active_days:
+                feed_dt = datetime.datetime.combine(
+                    now.date() + datetime.timedelta(days=offset),
+                    datetime.time(h, m),
+                    tzinfo=datetime.timezone.utc,
+                ).astimezone()
+
+                if feed_dt > now:
+                    candidates.append(feed_dt)
+                    break
+
+    if candidates:
+        next_dt = min(candidates)
+        return next_dt.strftime("%-I:%M %p")
+
+    return None
+
+
+class PetlibroFeedingScheduleSensor(PetlibroEntity, SensorEntity):
+    """Sensor showing next scheduled feed time with plan details as attributes."""
+
+    _attr_name = "Feeding Schedule"
+    _attr_icon = "mdi:clock-outline"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._device.serial}_feeding_schedule"
+
+    @property
+    def native_value(self) -> str:
+        plans = self._device.feeding_plans
+        if not plans:
+            return "No schedules"
+        next_time = _next_feed_time(plans)
+        return f"Next: {next_time}" if next_time else "No schedules"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        plans = self._device.feeding_plans
+        attrs: dict = {"plan_count": len(plans)}
+
+        for i, plan in enumerate(plans):
+            slot = plan.get("planId", i + 1)
+            local_time = _utc_to_local(plan.get("executionTime", ""))
+            portions = plan.get("grainNum", 1)
+            days = _format_days(plan.get("repeatDay", []))
+            audio = "Yes" if plan.get("enableAudio", True) else "No"
+
+            attrs[f"plan_{slot}_time"] = local_time
+            attrs[f"plan_{slot}_portions"] = portions
+            attrs[f"plan_{slot}_days"] = days
+            attrs[f"plan_{slot}_audio"] = audio
+
+        # Structured plan data for the Lovelace card
+        attrs["plans"] = [
+            {
+                "slot": plan.get("planId", i + 1),
+                "time_utc": plan.get("executionTime", ""),
+                "time_local": _utc_to_local_24h(plan.get("executionTime", "")),
+                "time_display": _utc_to_local(plan.get("executionTime", "")),
+                "portions": plan.get("grainNum", 1),
+                "days": [d for d in plan.get("repeatDay", []) if d > 0],
+                "audio": plan.get("enableAudio", True),
+            }
+            for i, plan in enumerate(plans)
+        ]
+
+        return attrs
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Update when coordinator data changes (including plan changes)."""
+        self.async_write_ha_state()

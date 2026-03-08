@@ -40,5 +40,57 @@
     "abort": {
       "already_configured": "This device is already configured"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Feeding Schedule",
+        "description": "{schedule_summary}",
+        "menu_options": {
+          "add_plan": "Add a feeding plan",
+          "remove_plan": "Remove a feeding plan",
+          "clear_plans": "Clear all plans",
+          "quick_setup": "Quick setup (feed every X hours)"
+        }
+      },
+      "add_plan": {
+        "title": "Add Feeding Plan",
+        "description": "Set the time, portions, and days for this feeding plan. Leave days empty for every day.",
+        "data": {
+          "plan_id": "Plan slot (1-9)",
+          "time": "Feeding time",
+          "portions": "Portions per feed",
+          "days": "Days of the week (empty = every day)",
+          "enable_audio": "Play audio announcement"
+        }
+      },
+      "remove_plan": {
+        "title": "Remove Feeding Plan",
+        "description": "Select a plan to remove.",
+        "data": {
+          "plan_to_remove": "Plan to remove"
+        }
+      },
+      "clear_plans": {
+        "title": "Clear All Plans",
+        "description": "This will remove all feeding plans from your feeder. Are you sure?",
+        "data": {
+          "confirm": "Yes, remove all plans"
+        }
+      },
+      "quick_setup": {
+        "title": "Quick Setup",
+        "description": "Automatically create evenly-spaced feeding plans throughout the day. This replaces all existing plans.",
+        "data": {
+          "interval": "Feed every",
+          "portions": "Portions per feed",
+          "start_hour": "First feed of the day",
+          "enable_audio": "Play audio announcement"
+        }
+      }
+    },
+    "abort": {
+      "no_plans": "No feeding plans to remove."
+    }
   }
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import time
 
 import voluptuous as vol
@@ -12,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN, PLATFORMS
+from .const import CONF_FEEDING_PLANS, DOMAIN, PLATFORMS
 from .coordinator import PetlibroCoordinator
 from .protocol.codec import timestamp_now_ms
 
@@ -28,6 +29,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: PetlibroConfigEntry) -> 
 
     entry.runtime_data = coordinator
 
+    # Restore persisted feeding plans
+    stored_plans = entry.options.get(CONF_FEEDING_PLANS, [])
+    if stored_plans:
+        coordinator.device.feeding_plans = list(stored_plans)
+        _LOGGER.info(
+            "Restored %d feeding plan(s) for %s",
+            len(stored_plans),
+            coordinator.device.serial,
+        )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(coordinator.async_shutdown)
@@ -35,6 +46,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: PetlibroConfigEntry) -> 
     # Register services (once per integration, not per entry)
     if not hass.services.has_service(DOMAIN, "manual_feed"):
         _register_services(hass)
+
+    # Register static path for the custom Lovelace card (once)
+    frontend_key = f"{DOMAIN}_frontend_registered"
+    if frontend_key not in hass.data:
+        hass.data[frontend_key] = True
+        card_js = os.path.join(os.path.dirname(__file__), "www", "petlibro-feeding-card.js")
+
+        try:
+            # HA 2023.7+
+            from homeassistant.components.http import StaticPathConfig
+            await hass.http.async_register_static_paths([
+                StaticPathConfig(
+                    f"/{DOMAIN}/petlibro-feeding-card.js",
+                    card_js,
+                    False,
+                )
+            ])
+        except (ImportError, AttributeError):
+            # Fallback for older HA versions
+            hass.http.register_static_path(
+                f"/{DOMAIN}/petlibro-feeding-card.js",
+                card_js,
+                cache_headers=False,
+            )
+
+        _LOGGER.info("Registered Petlibro feeding card frontend resource")
 
     return True
 
@@ -48,10 +85,10 @@ def _get_coordinator(hass: HomeAssistant, call: ServiceCall) -> PetlibroCoordina
     """Get coordinator for the target device in a service call."""
     device_ids = call.data.get("device_id", [])
     if not device_ids:
-        # Fall back to first entry
-        for entry_id, entry_data in hass.data.get(DOMAIN, {}).items():
-            if hasattr(entry_data, "runtime_data"):
-                return entry_data.runtime_data
+        # Fall back to first petlibro config entry
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if hasattr(entry, "runtime_data") and entry.runtime_data:
+                return entry.runtime_data
         raise ValueError("No Petlibro device found")
 
     dev_reg = dr.async_get(hass)
@@ -118,16 +155,60 @@ def _register_services(hass: HomeAssistant) -> None:
         # Store locally
         existing = [p for p in coordinator.device.feeding_plans if p.get("planId") != plan_id]
         existing.append(plan)
+        existing.sort(key=lambda p: p.get("planId", 0))
         coordinator.device.feeding_plans = existing
+
+        # Persist to config entry
+        await _persist_feeding_plans(hass, coordinator, existing)
 
         # Send to device
         await coordinator.device.set_feeding_plans(existing)
+
+        # Notify sensor of plan change
+        coordinator.device.state["_feeding_plans_version"] = timestamp_now_ms()
+        coordinator.device._notify_state_changed()
 
     async def handle_clear_feeding_plans(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass, call)
         coordinator.device.feeding_plans = []
         await coordinator.device.set_feeding_plans([])
 
+        # Persist empty
+        await _persist_feeding_plans(hass, coordinator, [])
+
+        # Notify sensor of plan change
+        coordinator.device.state["_feeding_plans_version"] = timestamp_now_ms()
+        coordinator.device._notify_state_changed()
+
+    async def handle_remove_feeding_plan(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass, call)
+        plan_id = call.data["plan_id"]
+        existing = [p for p in coordinator.device.feeding_plans if p.get("planId") != plan_id]
+        coordinator.device.feeding_plans = existing
+
+        # Persist
+        await _persist_feeding_plans(hass, coordinator, existing)
+
+        # Send to device
+        await coordinator.device.set_feeding_plans(existing)
+
+        # Notify sensor
+        coordinator.device.state["_feeding_plans_version"] = timestamp_now_ms()
+        coordinator.device._notify_state_changed()
+
     hass.services.async_register(DOMAIN, "manual_feed", handle_manual_feed)
     hass.services.async_register(DOMAIN, "set_feeding_plan", handle_set_feeding_plan)
     hass.services.async_register(DOMAIN, "clear_feeding_plans", handle_clear_feeding_plans)
+    hass.services.async_register(DOMAIN, "remove_feeding_plan", handle_remove_feeding_plan)
+
+
+async def _persist_feeding_plans(
+    hass: HomeAssistant,
+    coordinator: PetlibroCoordinator,
+    plans: list[dict],
+) -> None:
+    """Persist feeding plans to config entry options."""
+    entry = coordinator.entry
+    new_options = dict(entry.options)
+    new_options[CONF_FEEDING_PLANS] = plans
+    hass.config_entries.async_update_entry(entry, options=new_options)

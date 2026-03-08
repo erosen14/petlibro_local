@@ -27,6 +27,7 @@ TOPIC_BROADCAST_SUB = TOPIC_BASE + "/broadcast/sub"
 CONF_SERIAL = "serial"
 CONF_MQTT_USERNAME = "mqtt_username"
 CONF_MQTT_PASSWORD = "mqtt_password"
+CONF_FEEDING_PLANS = "feeding_plans"
 
 # Timing
 HEARTBEAT_WATCHDOG_SEC = 81
