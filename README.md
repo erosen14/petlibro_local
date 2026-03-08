@@ -44,9 +44,23 @@ This integration:
 - **Binary sensors** — Online status, food level, grain outlet blocked
 - **Events** — Feeding lifecycle (started, complete, blocked), device errors
 
+### Feeding Schedule Card
+
+A custom Lovelace card for managing your feeder's schedule directly from the HA dashboard:
+
+- **Weekly calendar overview** — See all feeding times across the week at a glance
+- **9 feeding slots** — View, add, edit, or delete individual feeding plans inline
+- **Per-slot controls** — Time picker, portion spinner (1-20), day-of-week toggles, audio toggle
+- **Day presets** — Quick buttons for "Every day", "Weekdays", "Weekends"
+- **Quick Setup** — Automatically create evenly-spaced plans (e.g., every 8 hours starting at 8 AM)
+- **Theme-aware** — Follows your HA theme colors and supports dark mode
+
+See [Feeding Schedule Card Setup](#feeding-schedule-card) below.
+
 ### Services
 - `petlibro_local.manual_feed` — Dispense a specific number of portions
 - `petlibro_local.set_feeding_plan` — Create/update a feeding schedule (time, portions, days, audio)
+- `petlibro_local.remove_feeding_plan` — Remove a specific feeding plan by slot number
 - `petlibro_local.clear_feeding_plans` — Remove all feeding schedules
 
 ## Prerequisites
@@ -107,6 +121,33 @@ Requires the feeder to already be connected to your local Mosquitto broker (DNS 
 
 1. Select **Enter credentials manually**
 2. Enter your device serial number and MQTT credentials (DL_PRODUCT_KEY / DL_PRODUCT_SECRET)
+
+## Feeding Schedule Card
+
+The integration includes a custom Lovelace card for managing feeding schedules. The card JS is automatically served by the integration — you just need to register it as a resource and add it to a dashboard.
+
+### 1. Add the resource
+
+Go to **Settings > Dashboards > Resources** (three-dot menu, top right) and add:
+
+| URL | Type |
+|-----|------|
+| `/petlibro_local/petlibro-feeding-card.js` | JavaScript Module |
+
+### 2. Add the card to a dashboard
+
+Edit any dashboard, click **Add Card**, and search for **Petlibro Feeding Schedule**. Select your feeding schedule sensor entity (e.g., `sensor.petlibro_515b0b_feeding_schedule`).
+
+Or add it manually via YAML:
+
+```yaml
+type: custom:petlibro-feeding-card
+entity: sensor.petlibro_515b0b_feeding_schedule
+```
+
+### Options flow (alternative)
+
+You can also manage feeding schedules through the integration's options flow: go to **Settings > Devices & Services > Petlibro Local > Configure**.
 
 ## Debug Logging
 
