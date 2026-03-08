@@ -47,31 +47,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: PetlibroConfigEntry) -> 
     if not hass.services.has_service(DOMAIN, "manual_feed"):
         _register_services(hass)
 
-    # Register static path for the custom Lovelace card (once)
+    # Register static path + auto-register Lovelace resource for the card (once)
     frontend_key = f"{DOMAIN}_frontend_registered"
     if frontend_key not in hass.data:
         hass.data[frontend_key] = True
         card_js = os.path.join(os.path.dirname(__file__), "www", "petlibro-feeding-card.js")
+        card_url = f"/{DOMAIN}/petlibro-feeding-card.js"
 
+        # Serve the JS file
         try:
-            # HA 2023.7+
             from homeassistant.components.http import StaticPathConfig
             await hass.http.async_register_static_paths([
-                StaticPathConfig(
-                    f"/{DOMAIN}/petlibro-feeding-card.js",
-                    card_js,
-                    False,
-                )
+                StaticPathConfig(card_url, card_js, False)
             ])
         except (ImportError, AttributeError):
-            # Fallback for older HA versions
-            hass.http.register_static_path(
-                f"/{DOMAIN}/petlibro-feeding-card.js",
-                card_js,
-                cache_headers=False,
-            )
+            hass.http.register_static_path(card_url, card_js, cache_headers=False)
 
-        _LOGGER.info("Registered Petlibro feeding card frontend resource")
+        # Auto-register as a Lovelace resource so the card is available
+        # in the card picker without manual resource setup
+        await _ensure_card_resource(hass, card_url)
 
     return True
 
@@ -200,6 +194,40 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "set_feeding_plan", handle_set_feeding_plan)
     hass.services.async_register(DOMAIN, "clear_feeding_plans", handle_clear_feeding_plans)
     hass.services.async_register(DOMAIN, "remove_feeding_plan", handle_remove_feeding_plan)
+
+
+async def _ensure_card_resource(hass: HomeAssistant, url: str) -> None:
+    """Auto-register the feeding card as a Lovelace dashboard resource.
+
+    Uses HA's lovelace ResourceStorageCollection so the card appears
+    in the card picker immediately — no manual resource setup needed.
+    """
+    try:
+        lovelace_data = hass.data.get("lovelace")
+        if lovelace_data is None:
+            return
+
+        # Support both dict and object access across HA versions
+        resources = getattr(lovelace_data, "resources", None)
+        if resources is None and isinstance(lovelace_data, dict):
+            resources = lovelace_data.get("resources")
+
+        if resources is None:
+            return
+
+        # Already registered?
+        for item in resources.async_items():
+            if item.get("url") == url:
+                return
+
+        await resources.async_create_item({"res_type": "module", "url": url})
+        _LOGGER.info("Auto-registered Petlibro feeding card as Lovelace resource")
+    except Exception:
+        _LOGGER.debug(
+            "Could not auto-register card resource — "
+            "add manually: Settings > Dashboards > Resources > %s",
+            url,
+        )
 
 
 async def _persist_feeding_plans(
