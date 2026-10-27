@@ -26,6 +26,7 @@ from .const import (
     CONF_SERIAL,
     DOMAIN,
     MAX_FEEDING_PLANS,
+    PLAN_LOCAL_TIME,
 )
 from .credential_sniffer import sniff_mqtt_credentials, CredentialSnifferError
 
@@ -417,15 +418,15 @@ def _utc_to_local_time(utc_time_str: str) -> str:
 
 def _local_to_utc_time_str(local_time_str: str) -> str:
     """Convert local HH:MM:SS or HH:MM to UTC HH:MM string."""
+    from .protocol.codec import local_time_to_utc
+
+    return local_time_to_utc(local_time_str)
+
+
+def _local_hhmm(local_time_str: str) -> str:
+    """Normalise a local HH:MM[:SS] string to HH:MM for storage."""
     parts = local_time_str.split(":")
-    h, m = int(parts[0]), int(parts[1])
-    local_dt = datetime.datetime.combine(
-        datetime.date.today(),
-        datetime.time(h, m),
-        tzinfo=datetime.datetime.now().astimezone().tzinfo,
-    )
-    utc_dt = local_dt.astimezone(datetime.timezone.utc)
-    return f"{utc_dt.hour:02}:{utc_dt.minute:02}"
+    return f"{int(parts[0]):02}:{int(parts[1]):02}"
 
 
 def _format_plan_summary(plan: dict) -> str:
@@ -490,8 +491,9 @@ class PetlibroOptionsFlow(OptionsFlowWithConfigEntry):
             days_input = user_input.get("days", [])
             enable_audio = user_input.get("enable_audio", True)
 
-            # Convert local time to UTC
-            execution_time = _local_to_utc_time_str(str(time_val))
+            # Convert local time to UTC (local time is kept for DST re-sync)
+            local_time = _local_hhmm(str(time_val))
+            execution_time = _local_to_utc_time_str(local_time)
 
             # Build repeat_day array
             if days_input:
@@ -505,6 +507,7 @@ class PetlibroOptionsFlow(OptionsFlowWithConfigEntry):
             plan = {
                 "planId": plan_id,
                 "executionTime": execution_time,
+                PLAN_LOCAL_TIME: local_time,
                 "repeatDay": repeat_day,
                 "enableAudio": enable_audio,
                 "audioTimes": 3,
@@ -614,12 +617,14 @@ class PetlibroOptionsFlow(OptionsFlowWithConfigEntry):
             plan_id = 1
             hour = start_hour
             while hour < 24 and plan_id <= MAX_FEEDING_PLANS:
-                # Convert local hour to UTC
-                execution_time = _local_to_utc_time_str(f"{hour:02}:00")
+                # Convert local hour to UTC (local time is kept for DST re-sync)
+                local_time = f"{hour:02}:00"
+                execution_time = _local_to_utc_time_str(local_time)
 
                 plans.append({
                     "planId": plan_id,
                     "executionTime": execution_time,
+                    PLAN_LOCAL_TIME: local_time,
                     "repeatDay": [1, 2, 3, 4, 5, 6, 7],
                     "enableAudio": enable_audio,
                     "audioTimes": 3,
