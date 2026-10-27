@@ -41,6 +41,7 @@ from .protocol.codec import (
     build_manual_feed,
     build_ntp_response,
     build_ntp_sync,
+    plan_for_device,
     build_response,
     parse_payload,
     timestamp_now_ms,
@@ -272,8 +273,7 @@ class PetlibroDevice:
         # Build plan response
         plans_payload = []
         for plan in self.feeding_plans:
-            plan_data = dict(plan)
-            plans_payload.append(plan_data)
+            plans_payload.append(plan_for_device(plan))
 
         await self._publish(
             self.topics.service_sub,

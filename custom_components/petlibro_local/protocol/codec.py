@@ -26,6 +26,40 @@ def timezone_offset_hours() -> float:
     return now.utcoffset().total_seconds() / 3600
 
 
+def local_time_to_utc(local_time_str: str) -> str:
+    """Convert a local "HH:MM" (or "HH:MM:SS") string to a UTC "HH:MM" string.
+
+    Uses the current UTC offset, so the result changes across DST transitions;
+    callers must keep the local time and re-run this after an offset change.
+    """
+    parts = local_time_str.split(":")
+    h, m = int(parts[0]), int(parts[1])
+    local_dt = datetime.datetime.combine(
+        datetime.date.today(),
+        datetime.time(h, m),
+        tzinfo=datetime.datetime.now().astimezone().tzinfo,
+    )
+    utc_dt = local_dt.astimezone(datetime.timezone.utc)
+    return f"{utc_dt.hour:02}:{utc_dt.minute:02}"
+
+
+def utc_time_to_local(utc_time_str: str) -> str:
+    """Convert a UTC "HH:MM" string to a local "HH:MM" string (current offset)."""
+    h, m = map(int, utc_time_str.split(":"))
+    utc_dt = datetime.datetime.combine(
+        datetime.date.today(),
+        datetime.time(h, m),
+        tzinfo=datetime.timezone.utc,
+    )
+    local_dt = utc_dt.astimezone()
+    return f"{local_dt.hour:02}:{local_dt.minute:02}"
+
+
+def plan_for_device(plan: dict) -> dict:
+    """Return a copy of a stored plan with integration-only keys removed."""
+    return {k: v for k, v in plan.items() if k != "localTime"}
+
+
 def build_response(cmd: str, msg_id: str | None = None, code: int = 0, **extra) -> str:
     """Build a JSON response payload to send to the device."""
     payload: dict[str, Any] = {
@@ -109,8 +143,11 @@ def build_feeding_plan(plans: list[dict]) -> str:
 
     Each plan dict should have keys:
         planId, executionTime, repeatDay, enableAudio, audioTimes, grainNum, syncTime
+    Integration-only keys (localTime) are stripped before sending.
     """
-    return build_command("FEEDING_PLAN_SERVICE", plans=plans)
+    return build_command(
+        "FEEDING_PLAN_SERVICE", plans=[plan_for_device(p) for p in plans]
+    )
 
 
 def parse_payload(raw: str | bytes) -> dict[str, Any]:

@@ -37,6 +37,11 @@ DEVICE_INIT_WATCHDOG_SEC = 10
 
 # Feeding plans
 MAX_FEEDING_PLANS = 9
+# Local "HH:MM" the user entered; kept in the stored plan so executionTime (UTC)
+# can be recomputed after a DST / timezone change. Never sent to the device.
+PLAN_LOCAL_TIME = "localTime"
+# How often to check whether the UTC offset changed (DST) and re-sync plans.
+PLAN_RESYNC_INTERVAL_MIN = 60
 
 # Commands (cmd field values)
 CMD_HEARTBEAT = "HEARTBEAT"

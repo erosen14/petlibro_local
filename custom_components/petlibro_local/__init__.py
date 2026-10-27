@@ -10,12 +10,20 @@ import time
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
+from homeassistant.core import Event, HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.event import async_track_time_interval
 
-from .const import CONF_FEEDING_PLANS, DOMAIN, PLATFORMS
+from .const import (
+    CONF_FEEDING_PLANS,
+    DOMAIN,
+    PLAN_LOCAL_TIME,
+    PLAN_RESYNC_INTERVAL_MIN,
+    PLATFORMS,
+)
 from .coordinator import PetlibroCoordinator
-from .protocol.codec import timestamp_now_ms
+from .protocol.codec import local_time_to_utc, timestamp_now_ms, utc_time_to_local
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,10 +46,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: PetlibroConfigEntry) -> 
             len(stored_plans),
             coordinator.device.serial,
         )
+        # Plans are stored with a UTC executionTime; make sure it still matches
+        # the local time the user asked for (DST may have changed since).
+        await _resync_plans_for_utc_offset(hass, coordinator)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(coordinator.async_shutdown)
+
+    # Keep executionTime (UTC) in step with the local schedule across DST and
+    # timezone changes: check periodically and whenever HA core config changes.
+    async def _periodic_resync(_now: datetime.datetime) -> None:
+        await _resync_plans_for_utc_offset(hass, coordinator)
+
+    @callback
+    def _core_config_updated(_event: Event) -> None:
+        hass.async_create_task(_resync_plans_for_utc_offset(hass, coordinator))
+
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass,
+            _periodic_resync,
+            datetime.timedelta(minutes=PLAN_RESYNC_INTERVAL_MIN),
+        )
+    )
+    entry.async_on_unload(
+        hass.bus.async_listen(EVENT_CORE_CONFIG_UPDATE, _core_config_updated)
+    )
 
     # Register services (once per integration, not per entry)
     if not hass.services.has_service(DOMAIN, "manual_feed"):
@@ -115,19 +146,16 @@ def _register_services(hass: HomeAssistant) -> None:
         days = call.data.get("days", [])
         enable_audio = call.data.get("enable_audio", True)
 
-        # Convert time to UTC HH:MM
+        # Convert time to UTC HH:MM, keeping the local time so the UTC value
+        # can be recomputed after a DST / timezone change.
         if isinstance(time_val, str):
-            h, m = map(int, time_val.split(":"))
+            parts = time_val.split(":")
+            h, m = int(parts[0]), int(parts[1])
         else:
             h, m = time_val.hour, time_val.minute
 
-        local_dt = datetime.datetime.combine(
-            datetime.date.today(),
-            datetime.time(h, m),
-            tzinfo=datetime.datetime.now().astimezone().tzinfo,
-        )
-        utc_dt = local_dt.astimezone(datetime.timezone.utc)
-        execution_time = f"{utc_dt.hour:02}:{utc_dt.minute:02}"
+        local_time = f"{h:02}:{m:02}"
+        execution_time = local_time_to_utc(local_time)
 
         # Build repeat_day array
         if days:
@@ -139,6 +167,7 @@ def _register_services(hass: HomeAssistant) -> None:
         plan = {
             "planId": plan_id,
             "executionTime": execution_time,
+            PLAN_LOCAL_TIME: local_time,
             "repeatDay": repeat_day,
             "enableAudio": enable_audio,
             "audioTimes": 3,
@@ -228,6 +257,68 @@ async def _ensure_card_resource(hass: HomeAssistant, url: str) -> None:
             "add manually: Settings > Dashboards > Resources > %s",
             url,
         )
+
+
+async def _resync_plans_for_utc_offset(
+    hass: HomeAssistant, coordinator: PetlibroCoordinator
+) -> None:
+    """Recompute executionTime (UTC) from each plan's local time and re-push.
+
+    The feeder executes plans by UTC time, so after a DST or timezone change
+    the stored UTC values no longer match the local schedule. Plans saved
+    before localTime existed are migrated by deriving it from executionTime
+    using the current offset.
+    """
+    plans = coordinator.device.feeding_plans
+    if not plans:
+        return
+
+    updated: list[dict] = []
+    changed = False  # stored plans need persisting
+    push = False  # device needs the new executionTime
+    for plan in plans:
+        plan = dict(plan)
+        execution_time = plan.get("executionTime")
+        if not execution_time:
+            updated.append(plan)
+            continue
+        try:
+            local_time = plan.get(PLAN_LOCAL_TIME)
+            if not local_time:
+                plan[PLAN_LOCAL_TIME] = utc_time_to_local(execution_time)
+                changed = True
+            else:
+                new_execution_time = local_time_to_utc(local_time)
+                if new_execution_time != execution_time:
+                    _LOGGER.info(
+                        "Plan %s for %s: local %s now maps to %s UTC (was %s), re-syncing",
+                        plan.get("planId"),
+                        coordinator.device.serial,
+                        local_time,
+                        new_execution_time,
+                        execution_time,
+                    )
+                    plan["executionTime"] = new_execution_time
+                    plan["syncTime"] = timestamp_now_ms()
+                    changed = True
+                    push = True
+        except (ValueError, AttributeError):
+            _LOGGER.warning(
+                "Plan %s for %s has an invalid time, leaving it unchanged",
+                plan.get("planId"),
+                coordinator.device.serial,
+            )
+        updated.append(plan)
+
+    if not changed:
+        return
+
+    coordinator.device.feeding_plans = updated
+    await _persist_feeding_plans(hass, coordinator, updated)
+    if push:
+        await coordinator.device.set_feeding_plans(updated)
+        coordinator.device.state["_feeding_plans_version"] = timestamp_now_ms()
+        coordinator.device._notify_state_changed()
 
 
 async def _persist_feeding_plans(
